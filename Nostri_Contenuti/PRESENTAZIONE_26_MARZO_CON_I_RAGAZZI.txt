@@ -1,0 +1,198 @@
+Dynamic Scene Graph Generation via
+Anticipatory Pre-Training
+Tommaso Aiello, Alessandro Bottardi, Gregorio Ceria
+Bocconi University
+April 16, 2026
+
+--- Page 2 ---
+Overview
+
+Goal: given a video {It}_t=1^T, predict a scene graph Gt for each time step t.
+
+I1, I2, . . . , IT -> G1, G2, . . . , GT
+
+Each frame is processed by three separate pre-trained models, producing the tuple
+ot,i = (bt,i, vt,i, st,i)
+
+where:
+- bt,i: bounding box
+- vt,i: visual feature
+- st,i: semantic embedding of vt,i
+
+Spatial processing: For frame It, object features go through a spatial transformer encoder, attending to all other objects in the scene. For each pair (i, j), a relation feature is built, stored as an embedded vector.
+
+--- Page 3 ---
+Architecture & Pre-Training
+
+Training pipeline: the model is trained in two stages: (1) Pre-Training and (2) Fine-Tuning.
+
+Since we are seeking a prediction on the graph's edges at time t, we can combine temporal information from previous frames, with visual evidence from current frames:
+
+P(Gt | {It}) = P(Gt | {It-1}) P(Gt | It)
+                Pre-Training    Fine-Tuning
+
+During pre-training, the model learns only the temporal term:
+
+P(Gt | {It-1})
+
+This stage teaches the model to anticipate current relations from the past only.
+
+Progressive temporal encoder: The core module of the architecture implements a double transformer model, with one attending to the other. Together they encode temporal dependencies at different timescales.
+
+Temporal architecture
+The task is to predict the correct semantic relation (among a dictionary of fixed predicates) between all objects. The model thus trains against a standard multi-label margin loss:
+
+L_ML = sum over p in Y+ and q in Y- of max(0, 1 - s_p + s_q)
+
+(1)
+
+--- Page 4 ---
+Architecture & Fine-Tuning
+
+In the latter stage of training, we combine the learned context on the dataset with the current frame of each image.
+
+The temporal representation learned in pre-training is then fused with the current-frame pair feature through the global temporal encoder. The output of the temporal transformer is merged with the current feature prediction in a final transformer model, after a temporal embedding indicating the temporal order of inputs. The model is then trained to predict labels between nodes correctly as before:
+
+L_ML = sum over p in Y+ and q in Y- of max(0, 1 - s_p + s_q)
+
+(2)
+
+--- Page 5 ---
+Generalization Across Multiple Datasets
+
+Main question: Does the anticipatory pre-training strategy used in APT generalize across different datasets and relational settings?
+
+Starting point
+- Evaluated only on Action Genome
+- Focuses on person-object interactions
+- Narrow relational space
+
+Limitations
+- Unclear effectiveness as relations vary
+- Non-human-centered objects unknown
+- Uncertain robustness to domain shifts
+
+Our idea: We propose to evaluate APT on multiple datasets with increasing diversity:
+- VidVRD
+- VidOR
+- ImageNet-VidVRD or PVSG as an extension
+
+Goal: Assess true cross-dataset generalization.
+
+--- Page 6 ---
+Problem Formulation
+
+Problem: APT has only been validated in a narrow benchmark setting.
+Therefore, we do not know whether its temporal reasoning ability generalizes to broader video scene graph generation tasks.
+
+Research objective: We want to test APT across datasets with:
+- different object distributions,
+- different predicate vocabularies,
+- different scene types and visual domains.
+
+Key Question
+Can APT maintain strong relational reasoning performance across datasets with substantially different relational structures?
+
+Extension: Beyond single-dataset evaluation, we also explore whether combining datasets can improve robustness.
+
+--- Page 7 ---
+Importance and Relevance
+
+A model that performs well only on one benchmark has limited practical value.
+
+Why this matters:
+- real-world video understanding involves heterogeneous objects and more complex interactions;
+- different datasets capture different biases, annotation styles, and relation distributions;
+- robustness across datasets is a stronger indicator of real generalization.
+
+Main motivation: We want to understand whether APT is:
+- a dataset-specific solution, or
+- a general framework for temporal relational reasoning in videos.
+
+--- Page 8 ---
+Data Sourcing Strategy
+
+- VidVRD
+- around 1,000 videos
+- 35 object categories
+- 132 predicates
+- standard benchmark for video visual relationship detection
+
+- VidOR
+- around 10,000 videos
+- larger scale than VidVRD
+- more diverse objects and relations
+
+- ImageNet-VidVRD / PVSG (optional extension)
+- useful for testing additional transfer settings
+- allows evaluating APT in broader or richer annotation regimes
+
+Strategy:
+- start from VidVRD as the first manageable benchmark
+- extend to VidOR for scale and diversity
+- optionally test joint or transfer-based learning with an additional dataset
+
+--- Page 9 ---
+Proposed Solution (High-Level Overview)
+
+Core idea: reuse APT with minimal modifications across datasets.
+
+Kept unchanged
+- spatial encoder
+- progressive temporal encoder
+- anticipatory pre-training strategy
+- fine-tuning framework
+
+Adapted per dataset
+- object detector
+- entity label space
+- predicate classifier output
+
+Methodology:
+1. prepare detections and object features for each dataset
+2. train APT separately on VidVRD and VidOR
+3. compare performance across datasets
+4. explore cross-dataset transfer or joint multi-dataset training
+
+--- Page 10 ---
+Performance Evaluation Approach
+
+Evaluation is dataset-specific but follows standard protocols.
+
+Metrics:
+- Recall@50
+- Recall@100
+- mean Average Precision (mAP), when applicable
+
+Baseline comparison:
+- compare with SOTA evaluation tools described in the paper
+
+Additional analysis:
+- single-dataset training vs multi-dataset training
+- train on one dataset and test on another
+- robustness to changes in label space and visual domain
+
+Success criterion:
+- If APT remains competitive across datasets, this would support genuine generalization rather than benchmark specialization.
+
+--- Page 11 ---
+Expected Outcome and Takeaway
+
+What we expect to learn:
+- whether APT generalizes across multiple datasets,
+- how performance changes with dataset diversity,
+- whether multi-dataset training improves robustness,
+- which components are most sensitive to dataset shift.
+
+Takeaway
+This project is a generalization study: we do not propose a completely new architecture, but we test whether APT can act as a general framework for video scene graph generation.
+
+Final Message
+If APT performs well across multiple datasets, then anticipatory temporal learning can be considered a robust paradigm for video relational reasoning, and not only an Action Genome-specific solution.
+
+--- Page 12 ---
+Thank you for your
+
+softmax(
+  (QK^T) / sqrt(dk)
+) V

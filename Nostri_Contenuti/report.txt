@@ -1,0 +1,229 @@
+REPORT DI PROGETTO
+Data: 22 aprile 2026
+
+Scopo del file
+- Tenere traccia di quello che succede in chat.
+- Aggiornare questo documento a ogni chat.
+- Conservare anche un riassunto della chat precedente.
+
+Chat precedente - riepilogo
+- Ho verificato il repository STTran e il README.
+- E' emerso che il progetto base e' STTran per Action Genome, con test e training gia' presenti.
+- Ho controllato `test.py`, `lib/object_detector.py` e `lib/sttran.py`.
+- Risultato: il codice carica checkpoint esterni, ma nel workspace non ci sono pesi preaddestrati.
+- Ho controllato la presentazione in `Nostri_Contenuti`.
+- L'intenzione del progetto e' diversa: non solo valutare STTran su Action Genome, ma studiare una estensione tipo APT con pre-training anticipatorio e generalizzazione su piu' dataset.
+
+Chat corrente - richiesta da registrare
+- L'utente ha chiesto di mantenere `report.txt` sotto `Nostri_Contenuti` come traccia viva della conversazione.
+- L'utente ha chiesto di aggiornare il file a ogni chat.
+- L'utente ha chiesto di includere sempre anche la chat precedente.
+- Obiettivo operativo confermato: mappare i gap esatti tra la base STTran e la direzione APT descritta nella presentazione.
+
+Cosa funziona nella base attuale
+- Pipeline STTran per Action Genome presente.
+- `train.py` e `test.py` esistono.
+- Il detector Faster R-CNN viene integrato nel flusso.
+- Il transformer relazionale STTran esiste e produce le distribuzioni delle relazioni.
+- Il dataset loader `dataloader/action_genome.py` e' presente.
+- Il modello puo' essere valutato se si forniscono i checkpoint esterni richiesti.
+
+Cosa non funziona o manca rispetto alla tua idea
+- Mancano i checkpoint nel repository.
+- Mancano i pesi di STTran da importare direttamente nel workspace.
+- Manca il file `fasterRCNN/models/faster_rcnn_ag.pth`.
+- Il codice e' centrato su Action Genome, non su VidVRD o VidOR.
+- Non esiste nel workspace una pipeline APT con pre-training e fine-tuning.
+- Non esistono adattatori o dataloader per dataset diversi da Action Genome.
+- Non c'e' un training separato per VidVRD/VidOR.
+- Non c'e' una valutazione cross-dataset.
+- Non c'e' una implementazione del confronto tra pre-training temporale e fine-tuning finale descritto nella presentazione.
+
+Gap esatti tra la base e la tua idea
+1. Dati
+- Base: Action Genome.
+- Idea: VidVRD, VidOR, eventualmente PVSG o ImageNet-VidVRD.
+- Gap: serve un nuovo dataloader e una nuova normalizzazione delle annotazioni per ogni dataset.
+
+2. Spazio delle classi
+- Base: classi e predicati di Action Genome.
+- Idea: vocabolari di oggetti e relazioni diversi per dataset.
+- Gap: serve mappare label space, predicati e metriche per ciascun dataset.
+
+3. Detector
+- Base: Faster R-CNN addestrato per Action Genome.
+- Idea: detector adattato al dataset target.
+- Gap: serve addestrare o sostituire il detector per ogni benchmark.
+
+4. Architettura
+- Base: STTran standard.
+- Idea: APT con pre-training anticipatorio e fine-tuning.
+- Gap: serve implementare il modulo di pre-training temporale e la fusione con il frame corrente.
+
+5. Training pipeline
+- Base: training singolo su Action Genome.
+- Idea: due stadi, pre-training e fine-tuning.
+- Gap: serve una nuova logica di training, checkpoint intermedi e probabilmente nuove loss o scheduling.
+
+6. Valutazione
+- Base: evaluation su Action Genome con Recall.
+- Idea: confronto tra dataset, transfer e robustezza.
+- Gap: servono script e protocolli di test multi-dataset.
+
+7. Asset mancanti
+- Base: nessun checkpoint incluso.
+- Idea: modello importabile o riproducibile end-to-end.
+- Gap: servono pesi, configurazioni e percorsi ai dati.
+
+Stato attuale
+- La base e' utile come punto di partenza per STTran su Action Genome.
+- La parte APT della presentazione e' ancora una proposta, non una implementazione nel repository.
+
+Prossimo passo suggerito
+- Mappare i file da aggiungere o cambiare per trasformare STTran in una base APT multi-dataset.
+
+-------------------------------------------------------------------------------
+Aggiornamento chat successiva - allineamento paper APT (PDF vs TXT)
+
+Chat precedente - riepilogo rapido
+- Abbiamo deciso che prima di stilare la lista di implementazione serve garantire aderenza al paper reale.
+- L'utente ha fornito il paper in due formati: PDF e TXT in `Nostri_Contenuti`.
+
+Richiesta della chat corrente
+- Controllare cosa manca nel file TXT rispetto al PDF del paper.
+
+Controlli eseguiti
+- Verificata presenza dei file:
+	- `Dynamic Scene Graph Generation via Anticipatory Pre-training.pdf`
+	- `Dynamic Scene Graph Generation via Anticipatory Pre-training.txt`
+- Estratto il testo dal PDF e confrontato con il TXT.
+- Verificata la presenza delle sezioni principali (Method, Pre-training/Fine-tuning, Experiments, Conclusion): presenti in entrambi.
+
+Esito sintetico del confronto
+- Il TXT e' sostanzialmente completo sul contenuto narrativo e metodologico.
+- Manca pero' almeno un dettaglio formale importante e diversi elementi di presentazione (captions/tabellare).
+
+Mancanze confermate nel TXT (rispetto al PDF)
+1) Formula esplicita dell'Eq. (10)
+- Nel PDF compare la formula della matching score con minimo IoU tra soggetto e oggetto.
+- Nel TXT il passaggio e' presente ma in forma descrittiva, senza la formula completa numerata.
+
+2) Caption complete di alcune figure/tabelle
+- Nel PDF sono presenti caption complete (es. Figure 1, Figure 4, Figure 5, Table 1) con dettagli aggiuntivi.
+- Nel TXT sono citate Figure/Table nel testo, ma non sempre con caption completa.
+
+3) Contenuto tabellare numerico non riportato integralmente
+- Nel PDF la comparazione quantitativa e gli ablation sono in formato tabella.
+- Nel TXT e' presente il riassunto testuale dei risultati, ma non la struttura tabellare completa con tutte le celle.
+
+4) Differenze minori di formattazione/OCR
+- Spezzature di parole, legature tipografiche e piccoli refusi (non bloccanti per comprensione tecnica).
+
+Impatto pratico per la nostra implementazione
+- Per progettare correttamente pipeline e ablation, il TXT e' quasi sufficiente.
+- Per riproducibilita' rigorosa servono anche i dettagli non pienamente preservati nel TXT:
+	- Eq. (10) in forma esatta
+	- specifiche tabellari complete
+	- caption tecniche dove chiariscono setting e confronto
+
+Decisione operativa consigliata
+- Usare il TXT come base di lavoro.
+- Usare il PDF come fonte di verita' per formule/caption/tabelle prima di congelare la checklist di implementazione.
+
+-------------------------------------------------------------------------------
+Correzione richiesta - gap tra paper APT e implementazione repo
+
+Chat precedente - riepilogo rapido
+- Nella risposta precedente ho confrontato PDF e TXT del paper.
+- L'utente ha chiarito che il confronto giusto e' PAPER vs CODICE della repo.
+
+Richiesta della chat corrente
+- Elencare cosa manca nell'implementazione attuale per eguagliare il paper "Dynamic Scene Graph Generation via Anticipatory Pre-training".
+
+Verdetto sintetico
+- La repo attuale implementa STTran (baseline), non l'architettura APT completa del paper.
+- Mancano componenti architetturali, pipeline di training a due stadi e protocollo sperimentale specifico del paper.
+
+Gap di implementazione (paper -> repo)
+
+1) Assenza della pipeline a due stadi APT
+- Paper: pre-training anticipatorio + fine-tuning separato.
+- Repo: un solo training loop standard, senza stage dedicato di pre-training anticipatorio.
+
+2) Assenza del task anticipatorio P(G_t | {I_{t-1}})
+- Paper: input di frame precedenti per predire relazioni del frame corrente.
+- Repo: training/eval standard con flusso STTran, senza task esplicito di anticipazione e senza perdita separata di pre-training.
+
+3) Manca la Progressive Temporal Encoder del paper
+- Paper: short-term encoder + long-term encoder espliciti.
+- Repo: modulo transformer con finestra temporale scorrevole di ampiezza 2, non equivalente all'accoppiata short/long-term del paper.
+
+4) Manca il matching esplicito delle coppie soggetto-oggetto tramite Eq. (10)
+- Paper: tracking di pair tra frame con score epsilon basato su min IoU e soglia > 0.8.
+- Repo: non c'e' implementazione esplicita di questo matching come nel paper.
+
+5) Manca la separazione Classifierspre / Classifiersfin
+- Paper: classificatori distinti tra pre-training e fine-tuning, con discard di Classifierspre in inferenza.
+- Repo: un set unico di layer di classificazione relazioni nel modello.
+
+6) Manca il global temporal encoder del fine-tuning APT
+- Paper: encoder globale che fonde output temporale e feature del frame corrente.
+- Repo: usa il glocal transformer di STTran, ma non il blocco definito nel paper con schema APT a due fasi.
+
+7) Uso di dati non allineato al pre-training del paper
+- Paper: sfrutta frame unlabeled in pre-training con protocollo specifico (sampling 1 ogni 3 frame, padding sequenze, gamma/lambda).
+- Repo: dataset loader Action Genome standard; non emerge pipeline esplicita per unlabeled-frame pretraining secondo paper.
+
+8) Iperparametri e ottimizzazione non allineati al paper
+- Paper: SGD con LR specifici per pre-training (0.001) e fine-tuning (1e-5), batch size 16, decay 0.9 per epoca.
+- Repo: configurazione generale (default AdamW, scheduler ReduceLROnPlateau), senza separazione ottimizzativa per i due stage APT.
+
+9) Asset/checkpoint mancanti per riprodurre i risultati del paper APT
+- Mancano checkpoint APT gia' pronti nella repo per validare subito la parita' con i risultati pubblicati.
+
+Impatto pratico
+- Anche con dataset Action Genome disponibile, questa repo non puo' essere considerata una replica fedele del paper APT.
+- E' una base STTran utile, ma richiede estensioni sostanziali per allinearsi all'articolo.
+
+Prossimo passo consigliato
+- Costruire una roadmap file-per-file per introdurre: pre-training anticipatorio, progressive temporal encoder short/long, matching Eq.(10), e fine-tuning dedicato con classifier separati.
+
+-------------------------------------------------------------------------------
+Aggiornamento chat successiva - azione richiesta dall'utente
+
+Chat precedente - riepilogo rapido
+- E' stato chiarito che il confronto corretto e' paper APT vs codice repo.
+- Sono stati elencati i gap principali per raggiungere una replica fedele del paper.
+
+Richiesta della chat corrente
+- Aggiornare `report.txt`.
+- Creare un file dedicato ai contenuti mancanti.
+
+Azioni eseguite
+- Aggiornato questo report con la nuova chat.
+- Creato il file: `Nostri_Contenuti/contenuti_mancanti_paper_vs_repo.txt`.
+
+Contenuto del nuovo file
+- Elenco strutturato dei contenuti mancanti paper -> repo.
+- Gap principali (pipeline due stadi, task anticipatorio, progressive temporal encoder, matching Eq. (10), classifier separati, protocollo dati/training, checkpoint).
+- Requisiti minimi per dichiarare la repo allineata al paper.
+
+-------------------------------------------------------------------------------
+Aggiornamento chat successiva - trasformazione in roadmap
+
+Chat precedente - riepilogo rapido
+- Era stato creato il file dei contenuti mancanti paper -> repo.
+
+Richiesta della chat corrente
+- Trasformare i contenuti mancanti in una roadmap e lasciarla come file.
+
+Azioni eseguite
+- Creata roadmap operativa completa in:
+	- `Nostri_Contenuti/roadmap_implementazione_APT.txt`
+
+Cosa contiene la roadmap
+- Fasi ordinate per priorita' (P0/P1/P2).
+- Task tecnici file-per-file.
+- Deliverable e criterio di "done" per ogni fase.
+- Stime di durata compatibili con GPU locale non-HPC.
+- Rischi principali e mitigazioni.
