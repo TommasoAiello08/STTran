@@ -1,0 +1,40 @@
+APT vs STTran — tabella risultati (placeholder da compilare dopo le run)
+Data: 22 aprile 2026
+
+Paper APT (riferimento, Tab. 1 del paper, Action Genome, Faster R-CNN condiviso):
+-----------------------------------------------------------------------------------
+Setting        | Constraint | R@10   | R@20   | R@50
+PredCls        | with       |  X.X   |  X.X   |  X.X
+PredCls        | no         |  X.X   |  X.X   |  X.X
+SGCls          | with       |  X.X   |  X.X   |  X.X
+SGCls          | no         |  X.X   |  X.X   |  X.X
+SGGen          | with       |  X.X   |  X.X   |  X.X
+SGGen          | no         |  X.X   |  X.X   |  X.X
+
+STTran baseline (nostra run locale):
+-----------------------------------------------------------------------------------
+Setting        | Constraint | R@10   | R@20   | R@50
+PredCls        | with       |
+PredCls        | no         |
+SGCls          | with       |
+SGCls          | no         |
+SGGen          | with       |
+SGGen          | no         |
+
+APT (nostra reimplementazione):
+-----------------------------------------------------------------------------------
+Setting        | Constraint | R@10   | R@20   | R@50
+PredCls        | with       |
+PredCls        | no         |
+SGCls          | with       |
+SGCls          | no         |
+SGGen          | with       |
+SGGen          | no         |
+
+Ablation (PredCls, with-constraint):
+-----------------------------------------------------------------------------------
+Variante                                         | R@10 | R@20 | R@50
+Full APT                                         |      |      |
+APT senza pre-training (solo finetune stage)     |      |      |
+APT senza long-term encoder                      |      |      |
+APT senza semantic branch                        |      |      |

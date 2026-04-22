@@ -1,7 +1,16 @@
-ROADMAP DI IMPLEMENTAZIONE - ALLINEAMENTO APT PAPER
+ROADMAP DI IMPLEMENTAZIONE - ALLINEAMENTO APT PAPER (versione validata)
 Data: 22 aprile 2026
 Ambito: Action Genome, replica fedele del paper "Dynamic Scene Graph Generation via Anticipatory Pre-training"
 Vincolo risorse: GPU locale di buona qualita', no HPC
+
+Decisioni di scope (sessione di implementazione)
+- Implementazione end-to-end (tutte le fasi, code-only, no training run).
+- Protocollo unlabeled frames STRICT: indicizziamo anche i frame non-keyframe in action_genome/frames/
+  e li facciamo passare dal detector per ottenere boxes/labels usati come storia {I_{t-1}}.
+- Baseline STTran viene sostituita: sttran.py rimane come riferimento ma il pipeline primario
+  passa per lib/apt_model.py; train.py/test.py diventano wrapper leggeri verso i nuovi script.
+- Dimensioni del paper: object rep = 840 (M_o v (512) + phi(b) (128) + semantic (200)),
+  relationship rep = 2192 (840 + 840 + 512).
 
 Obiettivo finale
 - Portare la repo da baseline STTran a implementazione allineata al paper APT,
@@ -14,22 +23,19 @@ Priorita': P0
 Durata stimata: 1-2 giorni
 
 Task
-1. Congelare baseline STTran esistente su Action Genome.
-2. Definire target metriche da confrontare (PredCls, SGCls, SGGen; with/no constraint).
-3. Stabilire formato logging unificato per stage e split.
+1. Congelare baseline STTran esistente su branch dedicato (tag "baseline").
+2. Documentare comandi baseline in README (PredCls, SGCls, SGGen).
+3. Definire tabella target con metriche del paper e gap previsto su hardware locale.
 
 File coinvolti
-- train.py
-- test.py
-- lib/config.py
+- train.py, test.py (baseline, preservati come wrapper)
 - Nostri_Contenuti/report.txt
 
 Deliverable
-- Esecuzione baseline documentata.
-- Tabella di riferimento "prima vs dopo" per tutte le metriche.
+- Comando baseline documentato e riproducibile via commit congelato.
 
 Done quando
-- Una run baseline completa e' ripetibile con stesso comando/config.
+- Baseline eseguibile da checkout del tag senza toccare il codice APT.
 
 -------------------------------------------------------------------------------
 FASE 1 - Refactor pipeline in due stadi
@@ -37,50 +43,55 @@ Priorita': P0
 Durata stimata: 2-3 giorni
 
 Task
-1. Separare training in due script:
-   - stage 1: pre-training anticipatorio
-   - stage 2: fine-tuning
-2. Introdurre configurazioni distinte per i due stage.
-3. Definire naming checkpoint separato (pre e fin).
+1. Creare entrypoint separati: train_pretrain.py, train_finetune.py.
+2. Introdurre config YAML per stage: configs/apt_pretrain.yaml, configs/apt_finetune.yaml.
+3. Introdurre lib/apt_config.py: parser YAML + override CLI.
+4. Naming checkpoint: apt_pretrain_eN.tar, apt_finetune_eN.tar.
 
 File da creare
 - train_pretrain.py
 - train_finetune.py
 - configs/apt_pretrain.yaml
 - configs/apt_finetune.yaml
+- lib/apt_config.py
 
 File da modificare
-- lib/config.py (o sostituzione con parser config per stage)
+- train.py, test.py -> wrapper che rimandano ai nuovi script
 
 Deliverable
-- Due entrypoint distinti e funzionanti.
-- Checkpoint salvati separatamente per stage.
+- Due entrypoint distinti, checkpoint separati per stage.
 
 Done quando
-- Stage 1 e stage 2 girano indipendentemente e in sequenza.
+- Stage 1 e stage 2 girano indipendentemente e sequenzialmente con comandi distinti.
 
 -------------------------------------------------------------------------------
-FASE 2 - Implementazione task anticipatorio P(G_t | {I_{t-1}})
+FASE 2 - Task anticipatorio P(G_t | {I_{t-1}}) con frame unlabeled (STRICT)
 Priorita': P0
 Durata stimata: 3-4 giorni
 
 Task
-1. Costruire datapipe che fornisce frame corrente + sequenza frame precedenti.
-2. Gestire frame unlabeled per pre-training secondo protocollo paper.
-3. Applicare loss solo su frame target etichettati.
+1. Indicizzare TUTTI i frame in action_genome/frames/<video_id>/, non solo quelli
+   con key-frame annotation.
+2. Per ciascun frame target t (key-frame etichettato), costruire la finestra di storia
+   {I_{t-gamma}, ..., I_{t-1}} e {I_{t-lambda}, ..., I_{t-1}}.
+3. Sampling 1 frame ogni 3 nella storia (paper).
+4. Padding con copia del primo frame disponibile se la storia e' piu' corta della finestra.
+5. Detector frozen su ogni frame della storia per ottenere box + category distribution.
+6. Loss applicata SOLO sul frame target.
 
 File da creare
 - dataloader/ag_anticipatory.py
 
 File da modificare
-- dataloader/action_genome.py (solo se utile per riuso utility)
+- dataloader/action_genome.py (riuso di AG parent per object/relationship classes e annotation dict)
 - train_pretrain.py
 
 Deliverable
-- Batch anticipatorio consistente per pair-relations nel tempo.
+- Un batch di pre-training contiene un frame target etichettato + gamma/lambda frame
+  precedenti (etichettati o non) consistenti temporalmente.
 
 Done quando
-- Lo stage di pre-training usa davvero solo storia temporale per predire il target.
+- Il pre-training usa soltanto la storia temporale per predire le relazioni del target.
 
 -------------------------------------------------------------------------------
 FASE 3 - Pair matching Eq. (10) e costruzione sequenze
@@ -88,23 +99,24 @@ Priorita': P0
 Durata stimata: 2-3 giorni
 
 Task
-1. Implementare matching pair soggetto-oggetto cross-frame con score:
+1. Implementare matching pair soggetto-oggetto cross-frame con score
    epsilon = min(IoU_subject, IoU_object), soglia > 0.8.
-2. Creare sequenze short-term e long-term per pair.
-3. Gestire fallback/padding in caso di pair assente nel frame.
+2. Per ogni pair (soggetto-oggetto) rilevato in I_{t-1}, tracciare a ritroso la sequenza
+   gamma e la sequenza lambda tramite matching frame-by-frame.
+3. Fallback/padding: se in un frame non c'e' pair corrispondente, copiare il match piu' vicino.
+4. Restituire gli indici di pair per frame e la mappa sequenziale per short/long-term.
 
 File da creare
-- lib/pair_matching.py
+- lib/pair_matching.py (funzioni pure, senza dipendenze dal modello)
 
 File da modificare
-- train_pretrain.py
-- train_finetune.py
+- train_pretrain.py, train_finetune.py (usano pair_matching)
 
 Deliverable
-- Utility testabile che genera sequenze pair-corrette per gamma/lambda.
+- Utility testabile che genera sequenze coerenti per gamma e lambda.
 
 Done quando
-- Verifica su batch: pair tracking coerente su piu' frame.
+- Verifica su batch con pair tracking coerente su piu' frame.
 
 -------------------------------------------------------------------------------
 FASE 4 - Progressive Temporal Encoder (short + long)
@@ -112,23 +124,33 @@ Priorita': P0
 Durata stimata: 4-6 giorni
 
 Task
-1. Implementare short-term encoder dedicato.
-2. Implementare long-term encoder dedicato.
-3. Implementare aggregazione long-term f_theta come da paper.
-4. Aggiungere frame encoding temporale coerente ai due blocchi.
+1. Spatial Encoder (1 layer multi-head, head=8) su feature oggetti per frame
+   f_{t,i} = [M_o v_{t,i}, phi(b_{t,i}), s_{t,i}] -> dim 840. Non serve positional encoding
+   perche' phi(b) contiene gia' l'informazione spaziale.
+2. Relationship feature e_{t,ij} = [fhat_{t,i}, fhat_{t,j}, M_u u_{t,ij}] -> dim 2192.
+3. Semantic extractor c_{t',ij} (FC singolo) sul pair -> dim 2192 per allineamento token.
+4. Short-term encoder (3 layer multi-head, head=8) con input
+   X(0)_s,ij = [A_ij + Z_s ; C_ij] (concat lungo dim sequenza), A_ij di lunghezza gamma=4.
+5. Long-term encoder (3 layer multi-head, head=8) con input
+   X(0)_l,ij = {f_theta(U_ij), psi(Xhat_s,ij)} + Z_l dove:
+   - U_ij ha lunghezza lambda=10
+   - psi e' un MLP 3-FC ReLU applicato token-wise (non cambia lunghezza)
+   - f_theta comprime la sequenza lambda in un token aggregato:
+     f_theta(U_ij) = W_theta ( phi(u_{t-lambda,ij}) CONCAT ... CONCAT phi(u_{t-1,ij}) )
+     dove phi e' un Conv1d(kernel=1) per reshape dimensionale e W_theta una Linear.
+6. Frame encoding Z_s e Z_l: embedding learnable (no sinusoidal) sulle posizioni temporali.
 
 File da creare
 - lib/apt_temporal_encoder.py
 
 File da modificare
-- lib/sttran.py (o nuova classe APT model)
-- lib/transformer.py (eventuale riuso componenti)
+- lib/apt_model.py (orchestrazione)
 
 Deliverable
-- Modulo temporale APT separato dal glocal transformer STTran baseline.
+- Modulo temporale APT separato dal glocal transformer STTran.
 
 Done quando
-- Forward produce output temporal context equivalente allo schema paper.
+- Forward produce Xhat_s,ij e Xhat_l,ij con shape coerenti alle equazioni del paper.
 
 -------------------------------------------------------------------------------
 FASE 5 - Pretrain/Finetune heads separate
@@ -136,19 +158,20 @@ Priorita': P0
 Durata stimata: 2 giorni
 
 Task
-1. Definire Classifierspre (stage 1).
-2. Definire Classifiersfin (stage 2).
-3. Scartare Classifierspre in inferenza finale.
+1. Classifiers_pre: tre linear heads separati (attention, spatial, contacting)
+   applicati a xhat_l,ij (ultimo token della sequenza long-term).
+2. Classifiers_fin: tre linear heads separati applicati a xhat_g,ij
+   (ultimo token della sequenza global-temporal in fine-tuning).
+3. Classifiers_pre scartati in inferenza finale.
 
 File da modificare
-- lib/sttran.py (o nuovo file modello APT)
-- test.py (uso solo classifier finale)
+- lib/apt_model.py
 
 Deliverable
-- Distinzione netta tra teste di classificazione per i due stage.
+- Separazione netta tra teste pre-training e fine-tuning.
 
 Done quando
-- Checkpoint stage 2 non dipende dalla testa pretrain in inferenza.
+- Il checkpoint di fine-tuning non dipende dalle teste pretrain in inferenza.
 
 -------------------------------------------------------------------------------
 FASE 6 - Global temporal encoder del fine-tuning
@@ -156,20 +179,23 @@ Priorita': P1
 Durata stimata: 2-3 giorni
 
 Task
-1. Implementare encoder globale del fine-tuning.
-2. Fondere output temporale pretrain con feature frame corrente.
-3. Verificare consistenza dimensionale e training stability.
+1. Implementare encoder globale che CONDIVIDE i parametri con lo Short-Term encoder
+   (paper: "shares the parameters with the short-term encoder").
+2. Input:
+   X(0)_g,ij = {Xhat_l,ij, e_{t,ij}} + Z_f
+   ossia la sequenza long-term + il token del frame corrente, piu' frame encoding Z_f.
+3. Output: Xhat_g,ij -> xhat_g,ij = ultimo token -> Classifiers_fin.
 
-File da creare/modificare
-- lib/apt_global_encoder.py (nuovo)
-- lib/sttran.py (o nuovo modello APT)
+File da modificare
+- lib/apt_temporal_encoder.py (Global e ShortTerm usano lo stesso nn.Module)
+- lib/apt_model.py
 - train_finetune.py
 
 Deliverable
-- Forward di fine-tuning aderente alle equazioni del paper.
+- Forward di fine-tuning che unisce esplicitamente contesto temporale e frame corrente.
 
 Done quando
-- Il modello fine-tuning usa esplicitamente sia contesto temporale sia frame corrente.
+- Il fine-tuning usa sia Xhat_l,ij (dal pretrain reuse) che e_{t,ij}.
 
 -------------------------------------------------------------------------------
 FASE 7 - Protocollo training allineato al paper
@@ -177,22 +203,23 @@ Priorita': P1
 Durata stimata: 1-2 giorni
 
 Task
-1. Pre-training: SGD, lr iniziale 0.001, decay 0.9/epoca, batch size 16.
-2. Fine-tuning: SGD, lr iniziale 1e-5, decay 0.9/epoca, batch size 16.
-3. Impostare gamma=4 e lambda=10 in config.
-4. Sampling 1 frame ogni 3 nel pre-training.
+1. Pre-training: SGD momentum=0.9, lr=1e-3, decay=0.9 per epoca, batch size=16.
+2. Fine-tuning: SGD momentum=0.9, lr=1e-5, decay=0.9 per epoca, batch size=16.
+3. Iperparametri architetturali: gamma=4, lambda=10.
+4. Sampling 1/3 nel pre-training sulle finestre di storia.
+5. Loss: MultiLabelMarginLoss su TUTTE e tre le teste (attention, spatial, contacting).
+   - Per frame target con set di relazioni Y+ (ground-truth) e Y- (negative) calcolo
+     L = sum_{p in Y+} sum_{q in Y-} max(0, 1 - y^p + y^q).
 
 File da modificare
-- train_pretrain.py
-- train_finetune.py
-- configs/apt_pretrain.yaml
-- configs/apt_finetune.yaml
+- train_pretrain.py, train_finetune.py
+- configs/apt_pretrain.yaml, configs/apt_finetune.yaml
 
 Deliverable
-- Training regime coerente con paper.
+- Regime di training coerente con il paper e logga gli iperparametri effettivi.
 
 Done quando
-- Log iperparametri combaciano con specifiche paper.
+- Log iperparametri combaciano con specifiche paper (lr, decay, batch, gamma, lambda, sampling).
 
 -------------------------------------------------------------------------------
 FASE 8 - Valutazione, ablation, riproducibilita'
@@ -200,12 +227,12 @@ Priorita': P1
 Durata stimata: 3-5 giorni
 
 Task
-1. Evaluation completa su PredCls, SGCls, SGGen.
-2. Ablation minime:
-   - senza pre-training
-   - senza long-term
-   - senza semantic branch
-3. Confronto tabellare con baseline STTran.
+1. Evaluation completa su PredCls, SGCls, SGGen con strategia with-constraint e no-constraint.
+2. Ablation (via config flags):
+   - senza pre-training (skip stage 1)
+   - senza long-term encoder (--no_long_term)
+   - senza semantic branch (--no_semantic)
+3. Confronto tabellare APT vs STTran baseline.
 
 File da creare
 - eval_apt.py
@@ -213,13 +240,13 @@ File da creare
 - Nostri_Contenuti/risultati_apt_vs_sttran.txt
 
 File da modificare
-- test.py (o wrapper valutazione)
+- test.py (wrapper verso eval_apt.py)
 
 Deliverable
-- Report numerico comparabile col paper.
+- Report numerico con gap residuo verso paper.
 
 Done quando
-- Esiste tabella finale con metriche e gap residuo verso paper.
+- Esiste la tabella finale aggiornata con le metriche del pipeline APT.
 
 -------------------------------------------------------------------------------
 FASE 9 - Packaging finale
@@ -227,40 +254,29 @@ Priorita': P2
 Durata stimata: 1 giorno
 
 Task
-1. Documentare comandi stage1/stage2/eval.
+1. Documentare in README.md i comandi stage1, stage2, eval.
 2. Documentare struttura checkpoint e requisiti dati.
-3. Salvare roadmap di run per macchina locale.
+3. Aggiungere un mini smoke-test (CPU) per pair_matching e APT forward.
 
 File da modificare
 - README.md
 - Nostri_Contenuti/report.txt
 
 Deliverable
-- Procedura end-to-end ripetibile da zero.
+- Procedura end-to-end ripetibile dalla sola documentazione.
 
 Done quando
 - Un membro del team puo' rilanciare tutta la pipeline con sola documentazione.
 
 -------------------------------------------------------------------------------
 Ordine di esecuzione raccomandato
-1. Fase 0
-2. Fase 1
-3. Fase 2
-4. Fase 3
-5. Fase 4
-6. Fase 5
-7. Fase 6
-8. Fase 7
-9. Fase 8
-10. Fase 9
+1. Fase 0, 2. Fase 1, 3. Fase 2, 4. Fase 3, 5. Fase 4, 6. Fase 5, 7. Fase 6, 8. Fase 7, 9. Fase 8, 10. Fase 9.
 
 Rischi principali e mitigazioni
-- Rischio: OOM su GPU locale.
-  Mitigazione: gradient accumulation, riduzione batch, checkpointing attivazioni.
-- Rischio: pair matching rumoroso.
-  Mitigazione: diagnostica IoU e debug su mini subset visualizzato.
-- Rischio: regressione baseline.
-  Mitigazione: mantenere branch baseline intatto e benchmark fisso a ogni fase.
+- OOM su GPU locale: gradient accumulation, riduzione batch, checkpointing attivazioni.
+- Pair matching rumoroso: diagnostica IoU e debug su mini subset.
+- Regressione baseline: mantenere tag baseline e smoke-test APT a ogni fase.
+- Detector su unlabeled frames costoso: caching delle feature per frame su disco.
 
 Criterio di successo finale
 - Implementazione con componenti APT richieste dal paper,

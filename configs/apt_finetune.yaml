@@ -1,0 +1,49 @@
+# Anticipatory Fine-Tuning stage (Sec. 3.5, Sec. 4.1 of the paper).
+# Task: predict G_t given both the previous frames {I_{t-1}} AND the current frame I_t.
+# Reuses the spatial encoder and progressive temporal encoder from pretrain.
+# Adds the global temporal encoder that SHARES weights with the short-term encoder.
+
+stage: finetune
+
+# --- Data
+data_path: /data/scene_understanding/action_genome/
+datasize: large
+mode: predcls
+use_unlabeled_frames: true
+frame_sampling_rate: 3
+pin_memory: false
+num_workers: 4
+
+# --- Architectural hyperparameters (must match pretrain)
+gamma: 4
+lambda: 10
+obj_feat_dim: 840
+rel_feat_dim: 2192
+union_proj_dim: 512
+box_embed_dim: 128
+semantic_dim: 200
+n_heads: 8
+spatial_enc_layers: 1
+short_enc_layers: 3
+long_enc_layers: 3
+global_enc_layers: 3
+dropout: 0.1
+use_semantic_branch: true
+use_long_term: true
+
+# --- Optimization (paper Sec. 4.1 finetune)
+optimizer: sgd
+lr: 0.00001                   # 1e-5
+lr_decay: 0.9
+momentum: 0.9
+batch_size: 16
+nepoch: 10
+grad_clip: 5.0
+
+# --- Pretrain checkpoint to resume from
+pretrain_ckpt: data/apt_pretrain/apt_pretrain_latest.tar
+
+# --- Checkpointing
+save_path: data/apt_finetune/
+save_every_epoch: true
+ckpt_prefix: apt_finetune

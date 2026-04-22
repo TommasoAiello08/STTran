@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environments
+.venv/
+.env
+venv/
+
+# APT / STTran checkpoints and run artefacts
+data/apt_pretrain/
+data/apt_finetune/
+data/apt_pretrain_*/
+data/apt_finetune_*/
+fasterRCNN/models/*.pth
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

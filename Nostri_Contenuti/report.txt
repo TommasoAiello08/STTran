@@ -245,3 +245,117 @@ Azioni eseguite
 Riferimento commit
 - Hash: `529a852`
 - Messaggio: `Add project notes, gap analysis, and APT implementation roadmap`
+
+-------------------------------------------------------------------------------
+Aggiornamento chat successiva - implementazione APT end-to-end
+
+Chat precedente - riepilogo rapido
+- Era stata scritta la roadmap e pushata su GitHub.
+
+Richiesta della chat corrente
+- Leggere il paper, validare/aggiornare la roadmap, poi implementare APT end-to-end.
+- L'utente ha confermato scope: full implementation, strict unlabeled frames, replace baseline,
+  match paper dims (840/2192), code-only (no training run in sessione).
+
+Validazioni aggiunte alla roadmap
+- Dimensioni esatte dal paper (obj 840, rel 2192) e formula M_u 512.
+- Semantic extractor c_{t,ij} esplicitato come FC.
+- f_theta implementato con Conv1d kernel=1 + concat + Linear W_theta (ablation linear/avg/max).
+- Global temporal encoder condivide i pesi con lo Short-Term encoder (paper).
+- Multi-label margin loss su tutte e tre le teste (attention/spatial/contacting).
+- Smoke-test CPU per pair_matching e PTE.
+
+Azioni eseguite
+- Creati configs/apt_pretrain.yaml e configs/apt_finetune.yaml.
+- Creati lib/apt_config.py, lib/pair_matching.py, lib/apt_temporal_encoder.py, lib/apt_model.py.
+- Creato dataloader/ag_anticipatory.py con enumeration strict dei frame in frames/<video>/.
+- Creati train_pretrain.py, train_finetune.py, eval_apt.py.
+- Creato scripts/run_ablation.sh (full + ablation senza pretrain/long-term/semantic).
+- Creato scripts/smoke_test_apt.py (verifiche CPU sulle shape, weight-sharing global<->short).
+- train.py e test.py sostituiti da dispatcher deprecati verso i nuovi entrypoint.
+- README.md riscritto per la pipeline APT.
+- Nostri_Contenuti/risultati_apt_vs_sttran.txt aggiunto come tabella segnaposto.
+
+Verifiche eseguite
+- ast.parse(...) OK su tutti i file nuovi.
+- Linter Python: nessun errore su apt_config/pair_matching/apt_temporal_encoder/apt_model/
+  ag_anticipatory/train_pretrain/train_finetune/eval_apt.
+- Smoke test CPU con torch>=2.0 eseguito con successo:
+  * pair_matching (IoU e placeholder fill) OK
+  * SpatialEncoder con obj_feat_dim=840 -> [5,840] OK
+  * ProgressiveTemporalEncoder con (gamma=4, lambda=10, D=2192) -> [9, 7, 2192] OK
+    (9 = 1 aggregato + 2*gamma=8 token short+semantic)
+  * GlobalTemporalEncoder -> [out_seq_len+1, B, D] OK
+  * Weight sharing global<->short confermato
+
+Caveat documentati nel README
+- In PredCls/SGCls con use_unlabeled_frames=True, i frame non annotati non producono
+  pair detections (gt_annotation vuota) e contribuiscono zero al contesto temporale.
+  Per sfruttare davvero i frame unlabeled in quelle modalita' occorre una detector
+  ibrida (sgdet sui non-labeled + predcls sul target). Soluzione piena rimandata.
+
+Prossimo passo suggerito
+- Predisporre checkpoint Faster R-CNN e una run completa sul server con GPU.
+- Compilare Nostri_Contenuti/risultati_apt_vs_sttran.txt con le metriche effettive.
+
+-------------------------------------------------------------------------------
+Aggiornamento chat successiva - valutazione demo "one sequence" e cleanup
+
+Chat precedente - riepilogo rapido
+- E' stata completata l'implementazione APT end-to-end (configs, lib/apt_*, dataloader/
+  ag_anticipatory, train_pretrain/train_finetune, eval_apt, run_ablation, smoke_test_apt).
+- Smoke-test CPU passato con torch 2.x.
+
+Richiesta della chat corrente
+- Capire se e' possibile replicare oggi un risultato del paper su almeno un sample,
+  producendo uno scene graph su una Image Sequence di Action Genome.
+- Chiarire se importare il pretrained model.
+
+Analisi dei blocker verificata
+- fasterRCNN/models/ contiene solo model.txt (2 byte): NESSUN checkpoint Faster R-CNN.
+- fasterRCNN/lib/model/roi_layers/__init__.py importa fasterRCNN.lib.model._C (estensione
+  CUDA). Su macOS senza toolchain CUDA l'import fallisce -> lib/object_detector.py,
+  lib/sttran.ObjectClassifier e i nuovi entrypoint APT non sono importabili su Mac.
+- data/ contiene solo framework.png: nessun GloVe, nessun Action Genome frames/annotations.
+- Pretrained model APT: NON ESISTE pubblicamente (gli autori del paper non li hanno
+  rilasciati). L'unico "import pretrained" possibile sarebbe di STTran baseline, non APT.
+
+Risposte dell'utente alle 4 domande di scoping
+- Hardware oggi: solo Mac (no CUDA).
+- Dataset: nulla scaricato.
+- Checkpoint: nessuno.
+- Obiettivo: scene graph reale e significativo su un clip AG (quindi STTran baseline,
+  non APT, perche' APT non ha pesi pubblici).
+
+Verdetto
+- L'obiettivo scelto non e' raggiungibile in una sessione con i vincoli dati:
+  serve download multi-GB dataset + due checkpoint Google Drive + refactor non-banale
+  delle operazioni CUDA -> torchvision per girare su CPU Mac.
+- Non si e' scritto nuovo codice in questa chat (solo diagnostica e proposta di path).
+
+Proposte fatte all'utente (entrambe rimandate)
+- Path A: demo_apt_synthetic.py su CPU Mac con dati sintetici AG-shaped, APT con pesi
+  random (scene graph strutturale, triplet stampati, predicati non significativi).
+- Path B: notebook Colab che scarica un clip AG + pesi STTran baseline e stampa triplet
+  reali dal baseline STTran (non APT).
+
+Decisione dell'utente
+- Nessun lavoro di codice per oggi sul fronte demo.
+- Richiesto: aggiornare report.txt e ripulire file inutili in Nostri_Contenuti.
+
+Cleanup eseguito in Nostri_Contenuti
+- Rimosso: contenuti_mancanti_paper_vs_repo.txt
+  Motivazione: completamente sostituito dalla roadmap validata, stesso contenuto in
+  forma piu' strutturata e con le validazioni aggiunte (dims 840/2192, f_theta,
+  weight sharing, multi-label margin loss).
+- Tenuto: Dynamic Scene Graph Generation via Anticipatory Pre-training.pdf (paper sorgente)
+- Tenuto: Dynamic Scene Graph Generation via Anticipatory Pre-training.txt (trascrizione)
+- Tenuto: PRESENTAZIONE_26_MARZO_CON_I_RAGAZZI.txt (artefatto storico del team)
+- Tenuto: roadmap_implementazione_APT.txt (versione validata, attiva)
+- Tenuto: risultati_apt_vs_sttran.txt (tabella segnaposto per risultati)
+- Tenuto: report.txt (questo file)
+
+Prossimo passo suggerito
+- Pianificare una sessione con Colab (o CUDA machine + downloads) per Path B.
+- In parallelo, quando serve una sanity visuale della pipeline APT su Mac,
+  si puo' estendere smoke_test_apt.py o scrivere Path A.

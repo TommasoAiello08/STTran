@@ -1,0 +1,44 @@
+# Anticipatory Pre-Training stage (Sec. 3.5, Sec. 4.1 of the paper).
+# Task: predict G_t given only the previous frames {I_{t-1}}.
+
+stage: pretrain
+
+# --- Data
+data_path: /data/scene_understanding/action_genome/
+datasize: large               # "mini" or "large"
+mode: predcls                 # predcls / sgcls / sgdet
+use_unlabeled_frames: true    # STRICT protocol: also use non-keyframe frames as history
+frame_sampling_rate: 3        # paper: 1 frame every 3 frames for pretraining
+pin_memory: false
+num_workers: 4
+
+# --- Architectural hyperparameters (paper Sec. 4.1)
+gamma: 4                      # short-term window length
+lambda: 10                    # long-term window length
+obj_feat_dim: 840             # M_o v (512) + phi(b) (128) + semantic (200)
+rel_feat_dim: 2192            # fhat_i (840) + fhat_j (840) + M_u u (512)
+union_proj_dim: 512
+box_embed_dim: 128
+semantic_dim: 200
+n_heads: 8
+spatial_enc_layers: 1
+short_enc_layers: 3
+long_enc_layers: 3
+global_enc_layers: 3
+dropout: 0.1
+use_semantic_branch: true
+use_long_term: true
+
+# --- Optimization (paper Sec. 4.1 pretrain)
+optimizer: sgd
+lr: 0.001
+lr_decay: 0.9                 # applied every epoch
+momentum: 0.9
+batch_size: 16
+nepoch: 10
+grad_clip: 5.0
+
+# --- Checkpointing / logging
+save_path: data/apt_pretrain/
+save_every_epoch: true
+ckpt_prefix: apt_pretrain
