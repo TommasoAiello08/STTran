@@ -1,0 +1,62 @@
+# APT pre-training config tuned for Colab (T4 16 GB / V100 16 GB / A100 40 GB).
+#
+# Differences vs configs/apt_pretrain.yaml:
+#   * smaller batch size (Colab T4 struggles with 16 in sgcls/sgdet)
+#   * fewer workers (Drive I/O is the bottleneck; 2 is often optimal)
+#   * save cadence tuned for frequent checkpointing on Drive (disconnections)
+#   * AMP enabled (if the training script supports torch.cuda.amp).
+#
+# Override on CLI as usual:
+#   python train_pretrain.py --config configs/apt_pretrain_colab.yaml \
+#       --set data_path=/content/drive/MyDrive/action_genome \
+#             save_path=/content/drive/MyDrive/apt_ckpts/pretrain/ \
+#             batch_size=8 nepoch=10
+
+stage: pretrain
+
+# --- Data
+data_path: /content/drive/MyDrive/action_genome/
+datasize: large
+mode: predcls                  # start with predcls on Colab (cheapest)
+use_unlabeled_frames: true
+frame_sampling_rate: 3
+pin_memory: true
+num_workers: 2
+
+# --- Architectural hyperparameters (paper Sec. 4.1, unchanged)
+gamma: 4
+lambda: 10
+obj_feat_dim: 840
+rel_feat_dim: 2192
+union_proj_dim: 512
+box_embed_dim: 128
+semantic_dim: 200
+n_heads: 8
+spatial_enc_layers: 1
+short_enc_layers: 3
+long_enc_layers: 3
+global_enc_layers: 3
+dropout: 0.1
+use_semantic_branch: true
+use_long_term: true
+
+# --- Optimization
+# We keep the paper's SGD/LR/decay. Batch is emulated by gradient accumulation
+# inside the training loop (DataLoader batch size is always 1 since the
+# dataset returns per-target-frame samples).
+optimizer: sgd
+lr: 0.001
+lr_decay: 0.9
+momentum: 0.9
+batch_size: 8                  # paper uses 16 but 8 is safer on T4/V100 16 GB
+nepoch: 10
+grad_clip: 5.0
+
+# --- Mixed precision (Colab GPUs have Tensor Cores on V100/A100; T4 keeps FP32)
+amp: true
+
+# --- Checkpointing / logging
+# Saving to Drive every epoch is recommended because Colab sessions can die.
+save_path: /content/drive/MyDrive/apt_ckpts/pretrain/
+save_every_epoch: true
+ckpt_prefix: apt_pretrain

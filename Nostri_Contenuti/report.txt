@@ -359,3 +359,312 @@ Prossimo passo suggerito
 - Pianificare una sessione con Colab (o CUDA machine + downloads) per Path B.
 - In parallelo, quando serve una sanity visuale della pipeline APT su Mac,
   si puo' estendere smoke_test_apt.py o scrivere Path A.
+
+-------------------------------------------------------------------------------
+Aggiornamento chat successiva (23 aprile 2026) - testare architettura,
+cercare pesi, preparare training pipeline
+
+Chat precedente - riepilogo rapido
+- Implementazione APT end-to-end gia' presente nel repo.
+- Smoke-test per blocchi isolati (SpatialEncoder, PTE, GlobalTemporalEncoder,
+  pair-matching) funzionante.
+- Su Mac senza CUDA non era possibile importare APTModel per colpa delle
+  estensioni CUDA/Cython richieste da lib/sttran (ROIAlign, nms,
+  draw_union_boxes) e del download GloVe richiesto da lib/word_vectors.
+
+Richiesta della chat corrente
+- 1) Testare l'architettura su un sample.
+- 2) Cercare pesi pre-addestrati importabili.
+- 3) Se non e' possibile, predisporre una pipeline di training.
+
+Azioni eseguite
+
+1) Architettura testata end-to-end su CPU (Mac)
+- Modificato lib/apt_model.py:
+  * Rimossi gli import top-level di lib.sttran.ObjectClassifier e
+    lib.word_vectors.obj_edge_vectors (che caricavano CUDA/Cython/GloVe).
+  * Questi sono diventati import lazy tramite funzioni helper
+    _lazy_import_object_classifier / _lazy_import_obj_edge_vectors.
+  * Aggiunti due argomenti al costruttore di APTModel:
+      - use_detector_head (default True): quando False NON crea
+        ObjectClassifier, permettendo di istanziare APTModel senza CUDA.
+      - use_glove (default True): quando False o se il download GloVe
+        fallisce, le embedding semantiche si inizializzano random con
+        un warning, senza bloccare l'import.
+  * Aggiunto metodo forward_from_entry(entry, target_frame_idx) che
+    salta ObjectClassifier e consuma direttamente l'entry dict. Usato
+    dal nuovo smoke-test per iniettare dati sintetici.
+  * forward(entry, target_frame_idx) ora chiama object_classifier solo
+    se esiste, altrimenti delega a forward_from_entry.
+
+- Creato scripts/smoke_test_apt_full.py (test end-to-end):
+  * Costruisce un entry Action-Genome-shaped sintetico (12 frame, 3 coppie
+    per frame, 2048-d features, 1024x7x7 union feat, 2x27x27 spatial mask,
+    GT attention/spatial/contacting sulla frame target).
+  * Istanzia APTModel con i dim del paper (840/2192) in modalita' predcls,
+    con use_detector_head=False e use_glove=False.
+  * Test eseguiti:
+      - test_paper_shape_contract: verifica 840/2192/PTE=9/Global=10.
+      - test_weight_sharing_global_vs_short: global.short_term_encoder.stack
+        condivide ogni parametro con pte.short.stack.
+      - test_pretrain_forward_and_backward: forward pretrain, loss con
+        MultiLabelMarginLoss (Eq. 16), backward, >10 parametri con grad.
+      - test_finetune_forward_and_backward: forward finetune con token del
+        frame corrente, loss + backward, >10 parametri con grad.
+      - test_pretrain_then_finetune_weight_load: salva state_dict da un
+        modello pretrain, lo carica in un modello finetune tramite
+        load_pretrain_backbone. missing=0, unexpected=0.
+  * Esito: TUTTI I TEST PASSANO su Python 3.14 / torch 2.11 su macOS.
+    Output effettivo:
+      pretrain  loss=2.8157  target_pairs=3  grad_params=126  OK
+      finetune  loss=2.1652  target_pairs=3  grad_params=127  OK
+
+2) Pesi pre-addestrati - NESSUN RISULTATO PUBBLICO
+- Due ricerche web indipendenti (stringa 1: "APT anticipatory pre-training
+  scene graph generation Li Yang Xu CVPR 2022 code github"; stringa 2:
+  "APT anticipatory pre-training action genome pretrained weights
+  checkpoint"). Nessun repo ufficiale degli autori, nessun checkpoint
+  rilasciato.
+- Progetti affini ma NON sostitutivi:
+  * yrcong/STTran: baseline ICCV 2021. Fornisce solo il checkpoint del
+    detector faster_rcnn_ag.pth. NON fornisce pesi APT.
+  * rohithpeddi/SceneSayer: ECCV 2024 sullo scene graph anticipation.
+    Rilascia checkpoint STTran+ / STTran++ / ODE / SDE, ma le architetture
+    NON sono allineate agli state-dict di APTModel.
+- Creato Nostri_Contenuti/pretrained_weights_status.txt con il report
+  dettagliato.
+
+3) Pipeline di training
+- Pipeline due-stadi gia' presente (train_pretrain.py + train_finetune.py +
+  eval_apt.py) e invariata.
+- Aggiunto requirements.txt con le dipendenze pip-installabili.
+  Il file documenta esplicitamente quali passi NON sono pip (CUDA toolchain,
+  cython extensions, faster_rcnn_ag.pth, dataset AG).
+- Aggiornato README.md:
+  * Sezione Requirements divisa in "CPU smoke-test" e "training reale".
+  * Aggiunto blocco "Pretrained weights" che indica chiaramente che non
+    esistono checkpoint APT pubblici.
+  * Runbook del nuovo smoke-test end-to-end.
+
+Verifiche finali
+- python -m scripts.smoke_test_apt        -> OK (building blocks)
+- python -m scripts.smoke_test_apt_full   -> OK (end-to-end model)
+- Linter Python: nessun errore in lib/apt_model.py e
+  scripts/smoke_test_apt_full.py.
+
+File toccati o creati in questa chat
+- lib/apt_model.py                                (modificato)
+- scripts/smoke_test_apt_full.py                  (NUOVO)
+- requirements.txt                                (NUOVO)
+- README.md                                       (aggiornato)
+- Nostri_Contenuti/pretrained_weights_status.txt  (NUOVO)
+- Nostri_Contenuti/report.txt                     (questo aggiornamento)
+
+Prossimo passo consigliato
+- Per arrivare a un PredCls/SGCls/SGDet reale su Action Genome servono tre
+  asset non in nostro possesso: (a) faster_rcnn_ag.pth, (b) dataset AG,
+  (c) ambiente CUDA con estensioni compilate. Appena disponibile anche uno
+  solo di questi (tipicamente in una sessione Colab o su una workstation
+  GPU), eseguire train_pretrain.py poi train_finetune.py e compilare
+  Nostri_Contenuti/risultati_apt_vs_sttran.txt.
+
+-------------------------------------------------------------------------------
+Aggiornamento chat successiva (23 aprile 2026, seconda parte) -
+diagnosi risorse e setup Colab
+
+Chat precedente - riepilogo rapido
+- Architettura APT testabile su CPU (scripts/smoke_test_apt_full).
+- Confermato: nessun checkpoint APT pubblico.
+- Pipeline training esistente (train_pretrain.py + train_finetune.py +
+  eval_apt.py) ma eseguibile solo su macchina con CUDA + Action Genome.
+
+Richiesta della chat corrente
+- Diagnosticare le risorse necessarie a replicare le metriche del paper.
+- Preparare codice pronto da eseguire su un Colab medio (T4/V100/A100).
+
+Azioni eseguite
+
+1) Diagnosi risorse
+- Creato Nostri_Contenuti/colab_resources_diagnosis.txt con:
+  * Riassunto delle specifiche di training del paper (SGD, LR 1e-3/1e-5,
+    batch 16, gamma=4, lambda=10, frame_sampling_rate=3).
+  * Costo per step stimato su T4/V100/A100 (dominato dall'inferenza FRCNN
+    su 11 frame per target: ~1.5 s/step su T4 FP32, ~0.7 s/step su V100
+    FP16, ~0.35 s/step su A100 FP16).
+  * Stima ore totali per 10+10 epoche (pretrain+finetune):
+        T4 free  ~83 h   (non fattibile in sessioni da 12h; servono 7-8
+                          sessioni con resume).
+        V100 Pro ~39 h
+        A100 Pro+ ~19 h  (configurazione consigliata).
+  * Storage: frame AG ~300 GB (Drive free 15 GB non basta; serve Pro+ 200+ GB
+    o estrazione on-the-fly dai video MP4).
+  * VRAM: picco ~4-5 GB in predcls, OK anche su T4 16 GB.
+  * Verdetto: replica paper end-to-end fattibile solo su Colab Pro+ (A100);
+    su free Colab si puo' fare sanity-check/mini-run.
+
+2) Setup Colab pronto all'uso
+- Creato scripts/colab_setup.sh (idempotente):
+  * pip install -r requirements.txt + pyyaml.
+  * Compila fasterRCNN/lib/model/_C con torch.utils.cpp_extension (CUDAExtension
+    quando CUDA e' presente, CppExtension altrimenti); rimuove prima le .so
+    Py3.6/x86_64 presenti nel repo perche' incompatibili.
+  * Compila le due estensioni Cython (draw_rectangles, box_intersections_cpu)
+    e ne rimuove le vecchie .so shipped.
+  * Scarica GloVe 6B (Stanford con fallback HuggingFace) e lo scompatta a
+    data/glove.6B.200d.txt.
+  * Se FASTER_RCNN_GDRIVE_ID o FASTER_RCNN_URL sono settati come env var,
+    scarica faster_rcnn_ag.pth in fasterRCNN/models/; altrimenti stampa un
+    WARNING non bloccante (l'utente potra' caricarlo manualmente).
+  * Esegue sanity-check finale: import di draw_rectangles, bbox, roi_layers,
+    APTModel con i .so freschi.
+
+3) Configurazioni Colab
+- Aggiunti tre YAML in configs/:
+  * configs/apt_pretrain_colab.yaml       (paper scale, batch 8, amp=true,
+                                           save su Drive)
+  * configs/apt_finetune_colab.yaml       (stage 2, batch 8, amp=true)
+  * configs/apt_pretrain_colab_mini.yaml  (datasize=mini, nepoch=1,
+                                           use_unlabeled_frames=false,
+                                           per free-tier sanity run)
+
+4) AMP + resume-from-checkpoint nei training scripts
+- lib/apt_config.py:
+  * Nuovi default: amp=False, resume_ckpt=None, log_every=100.
+- train_pretrain.py e train_finetune.py:
+  * Aggiunto torch.cuda.amp.autocast + GradScaler attivati da conf.amp.
+  * Gradient scaling, unscale prima del clip, scaler.step/update.
+  * resume_ckpt ripristina state_dict + optimizer + scheduler + scaler +
+    epoch corrente (necessario per sopravvivere alle disconnessioni Colab).
+  * I checkpoint salvati ora includono optimizer/scheduler/scaler state.
+
+5) Notebook Colab
+- Creato scripts/colab_train_apt.ipynb strutturato in 5 step:
+  1. Sanity env + drive.mount.
+  2. git clone + scripts/colab_setup.sh.
+  3. Esegue entrambi gli smoke test (blocchi e full end-to-end).
+  4. Stage 1 pretrain (opzione A: mini YAML; opzione B: full scale).
+  5. Stage 2 finetune + eval_apt.py.
+  * Include istruzioni per resume_ckpt e tips per OOM / I/O lento su Drive.
+
+Verifiche
+- bash -n scripts/colab_setup.sh: sintassi shell OK.
+- python -c "import ast" su train_pretrain/train_finetune/apt_config: OK.
+- python -c "import json; json.load(open(nb))" sul notebook: JSON OK.
+- python -m scripts.smoke_test_apt_full: pretrain+finetune ancora PASS su CPU.
+
+File toccati/creati in questa chat
+- Nostri_Contenuti/colab_resources_diagnosis.txt  (NUOVO)
+- scripts/colab_setup.sh                           (NUOVO, +x)
+- scripts/colab_train_apt.ipynb                    (NUOVO)
+- configs/apt_pretrain_colab.yaml                  (NUOVO)
+- configs/apt_finetune_colab.yaml                  (NUOVO)
+- configs/apt_pretrain_colab_mini.yaml             (NUOVO)
+- lib/apt_config.py                                (amp/resume_ckpt/log_every)
+- train_pretrain.py                                (AMP + resume)
+- train_finetune.py                                (AMP + resume)
+- README.md                                        (sezione "Running on Colab")
+- Nostri_Contenuti/report.txt                      (questo aggiornamento)
+
+Prossimo passo suggerito
+- Utente apre scripts/colab_train_apt.ipynb su Colab, enable GPU, esegue
+  lo step 1-2-3. Se il setup passa i sanity check puo' decidere se fare
+  mini-run (step 4 opzione A) o richiedere Pro+ per la run completa
+  (step 4 opzione B + step 5).
+- Quando sara' disponibile una run reale, compilare
+  Nostri_Contenuti/risultati_apt_vs_sttran.txt con PredCls/SGCls/SGDet.
+
+-------------------------------------------------------------------------------
+Aggiornamento chat successiva (23 aprile 2026, terza parte) -
+orchestratore Colab single-file + quickstart
+
+Chat precedente - riepilogo rapido
+- Preparata la diagnosi risorse per replicare il paper su Colab.
+- Aggiunti scripts/colab_setup.sh, 3 config Colab, AMP + resume nei
+  training script, notebook a 5 step.
+
+Richiesta della chat corrente
+- Spiegare con chiarezza cosa caricare su Colab.
+- Gestire il data loading di Action Genome (riferimento visivo a uno
+  snippet drive.mount + shutil.copytree da Drive a /content).
+- Fornire UN solo file che esegue tutto e produce un training report
+  che possa essere rimandato in chat.
+- Precisato che e' disponibile la GPU Colab piu' potente (A100).
+
+Azioni eseguite
+
+1) Orchestratore single-file
+- Creato scripts/colab_run_all.py. Unico entrypoint che l'utente deve
+  richiamare; accetta --stage {setup,smoke,pretrain,finetune,eval,
+  report,all}. Funzioni principali:
+  * env_snapshot(): cattura versione python/torch/cuda, nome GPU,
+    VRAM free/total, output di nvidia-smi.
+  * stage_setup(): richiama scripts/colab_setup.sh con env FASTER_RCNN_*.
+  * maybe_copy_dataset_locally(): se --copy_to_local, esegue rsync -a
+    da Drive a /content/action_genome (10x I/O speedup); se rsync non
+    disponibile cade su shutil.copytree. Idempotente.
+  * validate_ag_layout(): verifica che le cartelle annotations/ frames/
+    e i 4 pkl fondamentali esistano; conta le sub-directory in frames/
+    per sanity.
+  * stage_smoke(): runs scripts.smoke_test_apt + scripts.smoke_test_apt_full.
+  * run_training("pretrain"|"finetune"): subprocess su train_pretrain.py
+    / train_finetune.py con --config + --set overrides (data_path, mode,
+    save_path, pretrain_ckpt, resume_ckpt). Parsa le righe epoch con
+    regex per estrarre metriche e path checkpoint.
+  * run_eval(): subprocess su eval_apt.py; parsa le sezioni
+    "--- with_constraint ---" / "--- no_constraint ---" /
+    "--- semi_constraint ---" e estrae R@20/R@50/R@100.
+  * write_report(): produce training_report.txt + training_report.json
+    in CKPT_ROOT su Drive + snapshot timestamped. Template umano con
+    sezioni ENV / INVOCATION / DATASET / STAGE 1 / STAGE 2 / EVAL /
+    WALL-CLOCK.
+- Flag utili: --resume (riprende da *_latest.tar), --mode
+  {predcls,sgcls,sgdet}, --pretrain_overrides / --finetune_overrides
+  per modificare batch_size, nepoch, lambda, ecc. dalla CLI.
+
+2) Notebook Colab semplificato
+- scripts/colab_train_apt.ipynb riscritto a 3 celle operative + 3
+  markdown di corredo (7 celle totali):
+  * Cella 1: google.colab.drive.mount + git clone del repo dal fork
+    + copia automatica di apt_assets/faster_rcnn_ag.pth in
+    fasterRCNN/models/.
+  * Cella 2: %env AG_ROOT, %env CKPT_ROOT, e richiamo unico
+    !python scripts/colab_run_all.py --stage all --resume ...
+  * Cella 3: stampa /content/drive/MyDrive/apt_ckpts/training_report.txt.
+- Runtime di default nella metadata: A100.
+
+3) Documentazione "cosa caricare e come eseguire"
+- Nostri_Contenuti/COLAB_QUICKSTART.md (in italiano, rivolto all'utente):
+  * TL;DR in 30 secondi.
+  * Struttura attesa di Google Drive (action_genome/, apt_assets/, apt_ckpts/).
+  * Chiarisce che NON bisogna caricare a mano il codice: la Cella 1 fa
+    git clone.
+  * Istruzioni passo-passo per aprire il notebook da GitHub.
+  * Varianti: solo smoke, mini run, --copy_to_local, modalita' sgdet.
+  * Descrive il contenuto di training_report.txt.
+  * Checklist pre-esecuzione.
+
+4) README
+- Aggiornata la sezione "Running on Google Colab" per rimandare
+  esplicitamente al nuovo orchestratore single-file, al notebook a 3
+  celle, e al QUICKSTART.
+
+Verifiche
+- python -c "import ast" su colab_run_all.py: OK.
+- python scripts/colab_run_all.py --help: OK.
+- python -c "import json; json.load(nb)": OK (7 celle).
+- python -m scripts.smoke_test_apt_full: OK (pretrain+finetune).
+- Linter Python: nessun errore su colab_run_all.py.
+
+File toccati / creati in questa chat
+- scripts/colab_run_all.py                         (NUOVO)
+- scripts/colab_train_apt.ipynb                    (riscritto - 3 celle)
+- Nostri_Contenuti/COLAB_QUICKSTART.md             (NUOVO)
+- README.md                                        (sezione Colab aggiornata)
+- Nostri_Contenuti/report.txt                      (questo aggiornamento)
+
+Prossimo passo suggerito
+- L'utente prepara Google Drive (action_genome/, apt_assets/
+  faster_rcnn_ag.pth), apre il notebook su Colab A100, esegue le 3
+  celle, copia/incolla il training_report.txt in chat. Io in base al
+  report pianifico eventuale tuning iperparametri / debug errori /
+  riduzione scope per rientrare nei tempi di sessione.

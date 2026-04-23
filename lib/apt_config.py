@@ -97,6 +97,10 @@ class APTConfig:
         "save_every_epoch": True,
         "ckpt_prefix": "apt",
         "pretrain_ckpt": None,
+        # --- Colab-friendly extensions (safe defaults: off)
+        "amp": False,           # torch.cuda.amp autocast + GradScaler
+        "resume_ckpt": None,    # path to a checkpoint to resume (optimizer+epoch)
+        "log_every": 100,       # micro-step log cadence (counts *before* accumulation)
     }
 
     def __init__(self, **kwargs: Any) -> None:

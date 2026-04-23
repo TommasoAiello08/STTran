@@ -1,0 +1,183 @@
+APT ON COLAB - DIAGNOSI RISORSE PER REPLICARE IL PAPER
+Aggiornato: 23 aprile 2026
+
+Paper di riferimento: "Dynamic Scene Graph Generation via Anticipatory
+Pre-training", Li, Yang, Xu, CVPR 2022 (Sec. 4.1).
+
+================================================================
+1) SPECIFICHE DI TRAINING DEL PAPER
+================================================================
+* Optimizer                 SGD, momentum 0.9
+* Pre-training LR           1e-3, decay 0.9 per epoca
+* Fine-tuning LR            1e-5, decay 0.9 per epoca
+* Batch size                16 target frames
+* Gamma (short-term)        4
+* Lambda (long-term)        10
+* Frame sampling rate       1 frame ogni 3 per il pre-training
+* Epoche (per stage)        non esplicitate, ma in letteratura simili a
+                            STTran: ~10 epoche per stage.
+* Hardware dichiarato       il paper non indica GPU o ore.
+* Metriche target           PredCls Recall@20: 68.3, R@50: 72.0, R@100: 72.0
+                            (Tab. 1, with-constraint).
+
+================================================================
+2) QUANTO E' "PESA" UN'ITERAZIONE
+================================================================
+Per ogni target frame entriamo nel modello con:
+  * 1 frame target + lambda=10 frame di storia    = 11 immagini
+  * Risoluzione base Action Genome                ~ 600x1000 (dopo resize)
+  * Feature per frame (FRCNN, N<=64 oggetti)      2048-dim
+  * Union feat per coppia (roi-align)             1024 x 7 x 7
+  * Spatial mask per coppia                       2 x 27 x 27
+  * Coppie attive per frame target                ~10
+
+Componenti costosi per step:
+  a) FRCNN inference su 11 frame (freezato in train):
+     * Su T4 FP32: ~80-120 ms per frame -> ~1.0-1.3 s per step solo detector.
+     * Su V100 FP16: ~40 ms per frame -> ~0.5 s per step.
+     * Su A100 FP16: ~20 ms per frame -> ~0.25 s per step.
+  b) APT forward+backward (transformer relazionale, 3+3+3 layer, 2192 dim):
+     * Dominato dall'attention sui 2*gamma + 1 + 1 token per coppia.
+     * Su T4 FP32: ~50-100 ms per step per coppia batch.
+     * Il costo APT e' < 20% del costo detector.
+
+Ordine di grandezza aggregato per step (batch 1 target frame):
+  * T4   FP32:  ~1.5 s/step
+  * V100 FP16:  ~0.7 s/step
+  * A100 FP16:  ~0.35 s/step
+
+================================================================
+3) STIMA NUMERO STEP E ORE
+================================================================
+Action Genome (split paper):
+  * train: ~10000 key-frame target (Sec. 4.1; consistente con STTran).
+  * test:  ~2000 key-frame target.
+
+Con batch 16 emulato via gradient accumulation (il repo fa accumulo nel
+loop), un'epoca pretrain = 10000 step "micro" (uno per target). Moltiplica
+per 10 epoche pretrain + 10 epoche finetune = 200000 step micro.
+
+Ore stimate per 200k step:
+  * T4 free    : 200000 * 1.5 s      =  ~83 ore           (non fattibile in
+                                                            sessioni free da
+                                                            12h; servirebbero
+                                                            7-8 sessioni con
+                                                            checkpointing
+                                                            aggressivo).
+  * V100 Pro+  : 200000 * 0.7 s      =  ~39 ore           (~2 sessioni da 24h).
+  * A100 Pro+  : 200000 * 0.35 s     =  ~19 ore           (1 sessione lunga
+                                                            o due sessioni).
+  * A100 dedic.: come sopra, senza limiti di sessione.
+
+NB: queste stime NON includono il tempo di I/O su Google Drive. In pratica
+la lettura di ogni frame PNG da Drive aggiunge 50-200 ms per frame. Con 11
+frame per target si somma ~1-2 s per step di I/O. Mitigazioni: copiare il
+dataset su /content (temporaneo, ~100 GB disponibili su Colab Pro) oppure
+pre-caricare l'output del detector in pickle (vedi Sec. 6 qui sotto).
+
+================================================================
+4) VRAM E MEMORIA
+================================================================
+Stima memoria in training (T4 16 GB, V100 16 GB, A100 40/80 GB):
+  * FRCNN frozen, 1 frame        ~1.5 GB attivazioni (VGG/ResNet backbone).
+  * FRCNN su 11 frame sequenziale ~ picco 2.0 GB (no batch, riuso buffer).
+  * APT transformer, ~30 coppie  ~1.0 GB per activations.
+  * Ottimizzatore SGD            leggero (~80 MB per ~20M parametri APT).
+  * Totale picco con batch 1     ~4-5 GB.
+
+Conclusione: entra comodamente in T4 16 GB con mode=predcls.
+Per sgdet (1000 proposte per frame) sale a 8-10 GB: ancora compatibile
+con T4 16 GB a condizione di abbassare max_per_img a 64 come gia' fa il
+codice di STTran.
+
+================================================================
+5) STORAGE
+================================================================
+Asset richiesti e dimensioni stimate:
+
+  Asset                                        Size stimata   Fonte
+  --------------------------------------------  ------------  --------------
+  Action Genome - frames estratti (completi)    ~300 GB        Charades+AG
+  Action Genome - video MP4 originali           ~44 GB         Charades
+  Action Genome - annotations pickles           ~800 MB        AG zip
+  faster_rcnn_ag.pth                            ~530 MB        STTran GDrive
+  glove.6B.zip                                  ~820 MB        Stanford NLP
+  glove.6B.200d.txt (dopo unzip)                ~660 MB        idem
+  Repo APT + deps                               ~2 GB          GitHub
+  Checkpoint APT pretrain + finetune            ~200 MB cad.   generati
+  --------------------------------------------  ------------  --------------
+
+Google Drive free = 15 GB => non basta nemmeno per i frame.
+Google Drive Pro (100 GB) = borderline, non basta per 300 GB di frame.
+Google Drive Pro+ (200 GB / 2 TB) = OK.
+
+Alternative:
+  * Estrarre i frame ON-THE-FLY dai video MP4 durante il training
+    (ffmpeg + cache su /content). Serve riscrivere il loader per pescare
+    i frame direttamente dai video; non e' un semplice tweak di config.
+  * Usare "datasize: mini" (primi 80000 key del pickle) per overfit su
+    sotto-insieme. Utile per verificare che la pipeline gira end-to-end,
+    NON per riprodurre il paper.
+  * Usare il protocollo STTran "cached": salvare i detection output del
+    FRCNN una volta per tutte come pickle (~10-20 GB totali), poi
+    eliminare i frame. Richiede script dedicato (vedi Sec. 6).
+
+================================================================
+6) RACCOMANDAZIONE OPERATIVA
+================================================================
+Colab free (T4 16 GB, 12h session, 15 GB Drive):
+  NON adatto per replicare il paper end-to-end.
+  Adatto per: smoke test completo, overfit su mini-subset (~100 video),
+  debug del loop di training, generazione di 1-2 checkpoint per ispezione.
+  Flusso consigliato:
+    a) Setup ambiente + compilazione estensioni (vedi scripts/colab_setup.sh).
+    b) Scaricare solo un sotto-insieme AG (es. 200 video con script dedicato).
+    c) Usare configs/apt_pretrain_colab_mini.yaml con datasize=mini e
+       nepoch basso (1-2) per verificare che il training giri sulla GPU.
+    d) Salvare i checkpoint su Drive e scaricare alla fine.
+
+Colab Pro (~T4/V100, 24h session, 100 GB Drive):
+  Parziale. Basta per PredCls con dataset completo e nepoch=3-4 (~10-15 ore),
+  non sufficiente per la ricetta paper completa (10+10 epoche).
+  Si possono accumulare piu' sessioni con checkpointing robusto.
+
+Colab Pro+ (A100 40 GB, fino a 24h session, 200 GB Drive):
+  E' la configurazione "average Colab" tipica per chi fa CV serio.
+  Adatto per una run completa in 1-2 sessioni:
+    * Stage pretrain: ~10h su A100 fp16.
+    * Stage finetune: ~10h su A100 fp16.
+  Con mixed-precision (il codice lo supporta aggiungendo torch.cuda.amp)
+  i tempi scendono di un ulteriore 30-40%.
+
+Workstation con RTX 3090 / 4090 / A5000:
+  Paragonabile ad A100 per questa workload. Tempi 15-25 ore totali.
+
+================================================================
+7) ATTIVITA' ANCORA DA FARE LATO CODICE PRIMA DEL TRAINING REALE
+================================================================
+Tutte le modifiche sono minori rispetto alle modifiche architetturali gia'
+implementate (spatial/PTE/global, pair matching, heads separate, loader
+anticipatorio). In concreto:
+
+  1) Abilitare mixed-precision opzionale nel training loop
+     (torch.cuda.amp.autocast + GradScaler).
+     Opzionale ma raccomandato su A100/V100.
+  2) Aggiungere resume-from-checkpoint in train_pretrain.py / train_finetune.py
+     per riprendere dopo disconnessioni Colab.
+  3) Aggiungere salvataggio "best-on-val" oltre al "latest" esistente.
+  4) Migliorare apt_collate_fn con prefetch dinamico (attualmente
+     batch_size=1 lato DataLoader e accumulo in train loop).
+
+Punti 2) e 3) sono particolarmente utili su Colab.
+
+================================================================
+8) TL;DR
+================================================================
+* Replicare il paper end-to-end su Colab richiede almeno Pro+ (A100).
+* Su Colab free si puo' solo: (a) sanity-check della pipeline di training,
+  (b) overfit su mini-subset.
+* Costo I/O di Action Genome (300 GB di frame) e' il vero collo di
+  bottiglia oltre al tempo di calcolo; serve Drive Pro+ o estrazione
+  on-the-fly dai video MP4.
+* Il codice di training esiste gia', bastano piccole patch per Colab
+  (AMP, resume-from-ckpt) che aggiungiamo di seguito.

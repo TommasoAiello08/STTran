@@ -38,10 +38,21 @@ Missing pairs in a history frame are replaced with the nearest-neighbour placeho
 
 ## Requirements
 
-- Python 3.6+ (tested with 3.14 for CPU-only smoke tests; 3.8 recommended for full training)
-- PyTorch >= 1.8
-- The Faster R-CNN checkpoint from STTran (`fasterRCNN/models/faster_rcnn_ag.pth`, see the
-  original STTran instructions below).
+### For CPU-only architecture smoke tests (no dataset, no checkpoints)
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python -m scripts.smoke_test_apt          # building blocks
+python -m scripts.smoke_test_apt_full     # full APTModel end-to-end
+```
+
+### For real training / evaluation on Action Genome
+
+- Python 3.8 recommended (works with 3.6+; the smoke tests also run on 3.14).
+- PyTorch >= 1.8 with **CUDA** support.
+- The Faster R-CNN checkpoint from STTran (`fasterRCNN/models/faster_rcnn_ag.pth`,
+  see the original STTran instructions below). **Not shipped with this repo.**
 - Action Genome dataset with the standard directory layout:
   ```
   action_genome/
@@ -49,12 +60,73 @@ Missing pairs in a history frame are replaced with the nearest-neighbour placeho
     frames/
     videos/
   ```
+- GloVe 6B 200d embeddings (auto-downloaded by `lib/word_vectors.py` into `data/`
+  the first time they are needed).
 
-Build the cython helpers the same way as in the baseline:
+Build the cython helpers the same way as in the baseline (requires a working
+C/CUDA toolchain):
 ```
 cd lib/draw_rectangles && python setup.py build_ext --inplace && cd ../..
 cd fpn/box_intersections_cpu && python setup.py build_ext --inplace && cd ../..
 ```
+
+### Running on Google Colab
+
+A ready-to-run three-cell notebook and a single-file orchestrator are
+provided:
+
+```
+scripts/colab_train_apt.ipynb        # 3 cells (mount Drive, run, print report)
+scripts/colab_run_all.py             # one-file orchestrator that does everything
+Nostri_Contenuti/COLAB_QUICKSTART.md  # step-by-step "what to upload and run" doc
+```
+
+Short version — open the notebook on Colab with an A100 runtime, run the
+three cells in order, paste the generated `training_report.txt` back into
+chat. Nothing to upload manually: Cell 1 `git clone`s the repo from your
+GitHub fork. Cell 2 runs `scripts/colab_run_all.py --stage all`, which:
+
+1. Compiles the Faster R-CNN C++/CUDA extension (`model._C`) and the two
+   Cython helpers (`draw_rectangles`, `bbox`).
+2. Downloads GloVe 6B into `data/`.
+3. Validates the Action Genome layout on Drive; optionally copies frames
+   to `/content` local SSD via `rsync` for 10× faster I/O (`--copy_to_local`).
+4. Runs the two CPU smoke tests (`scripts.smoke_test_apt`,
+   `scripts.smoke_test_apt_full`) as a quick sanity check.
+5. Runs Stage 1 pre-training (`configs/apt_pretrain_colab.yaml`) with AMP
+   and resume-from-checkpoint.
+6. Runs Stage 2 fine-tuning (`configs/apt_finetune_colab.yaml`) loading
+   the Stage-1 weights via `load_pretrain_backbone`.
+7. Runs `eval_apt.py` for PredCls / SGCls / SGGen with with/no/semi
+   constraints.
+8. Writes a single `training_report.txt` to Drive with env / config /
+   per-epoch losses / eval metrics / wall-clock — this is the artefact to
+   share with collaborators after a run.
+
+See `Nostri_Contenuti/COLAB_QUICKSTART.md` for the concrete prerequisites
+(Drive layout, `faster_rcnn_ag.pth`, resume semantics, mini-run recipe).
+
+Colab-specific features added to the training scripts:
+
+* **Mixed precision** (`amp: true` in the YAML) wraps the forward pass in
+  `torch.cuda.amp.autocast` and uses `GradScaler`. No-op on CPU.
+* **Resume from checkpoint** (`--set resume_ckpt=...apt_*_latest.tar`) restores
+  model, optimizer, scheduler, and GradScaler state. Use it to recover from
+  Colab disconnections.
+* Checkpoints save optimizer + scheduler + scaler + epoch by default.
+
+See `Nostri_Contenuti/colab_resources_diagnosis.txt` for the detailed
+resource analysis (VRAM, storage, time-to-replicate per GPU tier).
+
+### Pretrained weights
+
+**No public APT checkpoint exists.** The authors of
+"Dynamic Scene Graph Generation via Anticipatory Pre-training" (CVPR 2022)
+have not released the official code or pretrained models. See
+`Nostri_Contenuti/pretrained_weights_status.txt` for the full audit and the
+nearest public alternatives (STTran baseline checkpoints, SceneSayer
+ECCV 2024 anticipation checkpoints — neither is directly loadable into
+`APTModel`).
 
 ---
 
@@ -89,11 +161,26 @@ Ablation study (full + three ablations):
 MODE=predcls ./scripts/run_ablation.sh
 ```
 
-CPU smoke-test of the APT building blocks (no dataset required):
+CPU smoke-tests (no dataset and no Faster R-CNN checkpoint required):
 
 ```bash
+# 1) Isolated building blocks (SpatialEncoder, PTE, GlobalTemporalEncoder,
+#    pair-matching). Verifies tensor shapes only.
 python -m scripts.smoke_test_apt
+
+# 2) End-to-end APTModel with synthetic Action-Genome-shaped entries.
+#    Runs the full forward of both pretrain and finetune stages, computes
+#    the paper's multi-label margin loss (Eq. 16) and checks that gradients
+#    flow into every learnable module. Dependencies: just ``torch`` and
+#    ``numpy``. No CUDA extensions, no GloVe, no Action Genome data.
+python -m scripts.smoke_test_apt_full
 ```
+
+Both smoke tests have been verified on macOS (Apple Silicon, Python 3.14,
+PyTorch 2.x). The second script exercises the non-trivial paths: f_theta
+aggregator, Eq. (10) pair matching across a 10-frame history, weight-sharing
+between the Global and Short-Term encoders, and the two-stage
+``load_pretrain_backbone`` handoff.
 
 ---
 

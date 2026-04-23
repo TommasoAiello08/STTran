@@ -119,8 +119,29 @@ def main() -> None:
                           momentum=conf.momentum)
     scheduler = StepLR(optimizer, step_size=1, gamma=conf.lr_decay)
 
+    # ------------------------------------------------------------------
+    # Mixed precision + resume-from-checkpoint (Colab-friendly)
+    # ------------------------------------------------------------------
+    use_amp = bool(getattr(conf, "amp", False)) and torch.cuda.is_available()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+    start_epoch = 0
+    resume_path = getattr(conf, "resume_ckpt", None)
+    if resume_path and os.path.exists(resume_path):
+        ckpt = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt["state_dict"], strict=False)
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        if "scheduler" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler"])
+        if "scaler" in ckpt and use_amp:
+            scaler.load_state_dict(ckpt["scaler"])
+        start_epoch = int(ckpt.get("epoch", -1)) + 1
+        print(f"[finetune] resumed from {resume_path} (next epoch {start_epoch})")
+
     accum_steps = max(1, int(conf.batch_size))
-    for epoch in range(conf.nepoch):
+    log_every = int(getattr(conf, "log_every", 100))
+    for epoch in range(start_epoch, conf.nepoch):
         model.train()
         object_detector.is_train = True
         optimizer.zero_grad()
@@ -142,25 +163,28 @@ def main() -> None:
                     im_all=None,
                 )
 
-            preds = model(entry, target_frame_idx=target_frame_idx)
-            losses = compute_multi_label_margin_loss(preds, device)
-            if not losses:
-                continue
-            total = sum(losses.values()) / accum_steps
-            total.backward()
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                preds = model(entry, target_frame_idx=target_frame_idx)
+                losses = compute_multi_label_margin_loss(preds, device)
+                if not losses:
+                    continue
+                total = sum(losses.values()) / accum_steps
+            scaler.scale(total).backward()
 
             for k, v in losses.items():
                 running[k] = running.get(k, 0.0) + float(v.detach().item())
 
             step += 1
             if step % accum_steps == 0:
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     model.parameters(), max_norm=conf.grad_clip, norm_type=2,
                 )
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad()
 
-            if (batch_idx + 1) % (100 * accum_steps) == 0:
+            if (batch_idx + 1) % (log_every * accum_steps) == 0:
                 dt = time.time() - t0
                 msg = "  ".join(f"{k}={v/step:.4f}" for k, v in running.items())
                 print(f"[finetune] epoch {epoch} step {batch_idx+1}/{len(loader)} "
@@ -171,13 +195,19 @@ def main() -> None:
                 step = 0
 
         scheduler.step()
+        ckpt = {
+            "state_dict": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "scaler": scaler.state_dict(),
+            "epoch": epoch,
+            "config": conf.as_dict(),
+        }
         ckpt_path = os.path.join(conf.save_path,
                                  f"{conf.ckpt_prefix}_e{epoch}.tar")
-        torch.save({"state_dict": model.state_dict(),
-                    "epoch": epoch, "config": conf.as_dict()}, ckpt_path)
+        torch.save(ckpt, ckpt_path)
         latest = os.path.join(conf.save_path, f"{conf.ckpt_prefix}_latest.tar")
-        torch.save({"state_dict": model.state_dict(),
-                    "epoch": epoch, "config": conf.as_dict()}, latest)
+        torch.save(ckpt, latest)
         print(f"[finetune] saved checkpoint {ckpt_path}")
 
 

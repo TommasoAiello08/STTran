@@ -1,0 +1,46 @@
+# Tiny APT pre-training config for *sanity checking* the pipeline on a
+# single Colab free-tier session (T4, 12h). NOT intended to reproduce the
+# paper: datasize=mini, batch_size small, 1 epoch.
+
+stage: pretrain
+
+# --- Data
+data_path: /content/drive/MyDrive/action_genome/
+datasize: mini                 # first 80k keyframes of the pickle (~400 videos)
+mode: predcls
+use_unlabeled_frames: false    # skip unlabeled history to cut I/O dramatically
+frame_sampling_rate: 3
+pin_memory: true
+num_workers: 2
+
+# --- Architectural hyperparameters (paper dims, unchanged)
+gamma: 4
+lambda: 10
+obj_feat_dim: 840
+rel_feat_dim: 2192
+union_proj_dim: 512
+box_embed_dim: 128
+semantic_dim: 200
+n_heads: 8
+spatial_enc_layers: 1
+short_enc_layers: 3
+long_enc_layers: 3
+global_enc_layers: 3
+dropout: 0.1
+use_semantic_branch: true
+use_long_term: true
+
+# --- Optimization
+optimizer: sgd
+lr: 0.001
+lr_decay: 0.9
+momentum: 0.9
+batch_size: 4                  # effective batch via accumulation
+nepoch: 1                      # just verify one loop runs end-to-end
+grad_clip: 5.0
+amp: true
+
+# --- Checkpointing (keep everything on Drive for post-mortem inspection)
+save_path: /content/drive/MyDrive/apt_ckpts/mini_pretrain/
+save_every_epoch: true
+ckpt_prefix: apt_pretrain_mini

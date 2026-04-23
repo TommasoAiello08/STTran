@@ -1,0 +1,88 @@
+PRETRAINED WEIGHTS - STATO
+Aggiornato: 23 aprile 2026
+
+Obiettivo della sessione: trovare pesi pre-addestrati per APT
+(Dynamic Scene Graph Generation via Anticipatory Pre-training, Li et al.,
+CVPR 2022) da importare nel repository e usare in inferenza.
+
+================================================================
+VERDETTO
+================================================================
+Non esistono pesi APT pubblici. Gli autori del paper CVPR 2022 non hanno
+rilasciato codice sorgente ne' checkpoint sul loro dominio istituzionale,
+su GitHub, su OpenAccess CVF, ne' su repository di terze parti. Due
+ricerche web indipendenti (2026-04-23) lo confermano:
+
+1) Ricerca su "Anticipatory Pre-training scene graph generation Li Yang Xu
+   CVPR 2022 code github" -> nessun repo ufficiale degli autori.
+2) Ricerca su "APT anticipatory pre-training action genome pretrained
+   weights checkpoint" -> i link restituiti (LAPA, AntGPT, APTv2,
+   jvgemert/apt) corrispondono ad ALTRI progetti con acronimo "APT";
+   nessuno riguarda il paper di Li et al. 2022 sullo scene graph dinamico.
+
+Conseguenza pratica: NON e' possibile "importare oggi un pretrained APT
+pronto". Per replicare le metriche del paper serve addestrarlo da zero.
+
+================================================================
+ALTERNATIVE PUBBLICHE AFFINI
+================================================================
+
+A) STTran baseline (Cong et al., ICCV 2021)
+   * Repository: https://github.com/yrcong/STTran
+   * Non e' APT; e' la baseline su cui APT e' costruito.
+   * Gli autori distribuiscono il checkpoint Faster R-CNN su Action Genome
+     ('faster_rcnn_ag.pth') tramite Google Drive (vedi README del repo).
+     E' il checkpoint del DETECTORE, indispensabile anche per APT.
+   * Non fornisce pesi del transformer relazionale APT.
+
+B) SceneSayer / STTran+ / STTran++ (Peddi et al., ECCV 2024)
+   * Repository: https://github.com/rohithpeddi/SceneSayer
+   * Paper imparentato per tema ("scene graph anticipation"): tratta il
+     PROBLEMA dell'anticipazione di scene graph su Action Genome, ma con
+     un'architettura diversa (modelli ODE/SDE e varianti STTran).
+   * Rilascia checkpoint "sttran_ant", "dsgdetr_ant", "sttran_gen_ant",
+     "dsgdetr_gen_ant", "ode", "sde" (settembre 2024).
+   * Copertura Action Genome AGS / PGAGS / GAGS (~sgdet / sgcls / predcls).
+   * Utilizzabile come RIFERIMENTO per validare la pipeline di dati
+     Action Genome, NON come inizializzazione per APT.
+   * Le shape degli state-dict non sono compatibili con APTModel.
+
+C) SGFormer / TempsFormer / altre baseline su AG
+   * Nessuna di queste coincide con APT: condividono il task ma non la
+     coppia pre-training anticipatorio + fine-tuning con heads separate
+     Classifiers_pre / Classifiers_fin descritti nel paper.
+
+================================================================
+COSA SI PUO' IMPORTARE OGGI NELLA REPO
+================================================================
+
+1) Faster R-CNN su Action Genome ('faster_rcnn_ag.pth')
+   * Fonte: link Google Drive nel README originale di yrcong/STTran.
+   * Destinazione: fasterRCNN/models/faster_rcnn_ag.pth (attualmente e'
+     solo un file placeholder 'model.txt').
+   * Utilita': imprescindibile per qualunque training o valutazione;
+     STTran e APT condividono lo stesso detector frozen.
+
+2) GloVe 6B 200d ('glove.6B.200d.txt')
+   * Fonte: http://nlp.stanford.edu/data/glove.6B.zip (scaricato in
+     automatico da lib/word_vectors.py quando serve).
+   * Destinazione: data/glove.6B.200d.txt.
+
+3) Dataset Action Genome
+   * Richiede domanda agli autori (Jingwei Ji et al.) e alla piattaforma
+     Charades per i video.
+
+Tutto il resto (spatial encoder, PTE, global encoder, heads APT) va
+addestrato da zero. Non esistono sorgenti "di rete" da cui partire.
+
+================================================================
+IMPATTO SUL PIANO DI OGGI
+================================================================
+
+* Punto 1 del piano (testare l'architettura): fatto oggi su CPU con
+  dati sintetici, vedi scripts/smoke_test_apt_full.py.
+* Punto 2 (trovare pesi): NON POSSIBILE. Documentato qui sopra.
+* Punto 3 (set up training pipeline): la pipeline due-stadi esiste gia'
+  (train_pretrain.py + train_finetune.py + eval_apt.py). L'unica cosa
+  che mancava per poterla eseguire end-to-end era il detector + dati;
+  vedi il nuovo requirements.txt e le istruzioni aggiornate nel README.

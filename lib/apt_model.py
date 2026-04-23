@@ -50,8 +50,23 @@ from lib.pair_matching import (
     gather_pair_tokens,
     DEFAULT_MATCH_THRESHOLD,
 )
-from lib.sttran import ObjectClassifier
-from lib.word_vectors import obj_edge_vectors
+
+# ``lib.sttran`` and ``lib.word_vectors`` transitively import CUDA/Cython
+# extensions (ROIAlign, nms, draw_union_boxes) and trigger a GloVe download.
+# Those dependencies are unavailable on machines without a CUDA toolchain or
+# the Action Genome data directory, yet we still want to be able to import
+# the APT model (e.g. for architectural smoke tests on CPU-only macOS).
+# We therefore import those symbols lazily, inside ``__init__``.
+
+
+def _lazy_import_object_classifier():
+    from lib.sttran import ObjectClassifier  # local import
+    return ObjectClassifier
+
+
+def _lazy_import_obj_edge_vectors():
+    from lib.word_vectors import obj_edge_vectors  # local import
+    return obj_edge_vectors
 
 
 # ----------------------------------------------------------------------------
@@ -173,7 +188,9 @@ class APTModel(nn.Module):
                  use_semantic_branch: bool = True,
                  use_long_term: bool = True,
                  pair_match_threshold: float = DEFAULT_MATCH_THRESHOLD,
-                 f_theta_mode: str = "linear") -> None:
+                 f_theta_mode: str = "linear",
+                 use_detector_head: bool = True,
+                 use_glove: bool = True) -> None:
         super().__init__()
         assert mode in ("predcls", "sgcls", "sgdet")
         assert stage in ("pretrain", "finetune")
@@ -201,20 +218,36 @@ class APTModel(nn.Module):
         self.use_long_term = use_long_term
         self.pair_match_threshold = pair_match_threshold
 
-        # Detector-side plumbing (reused from STTran baseline).
-        self.object_classifier = ObjectClassifier(mode=mode, obj_classes=obj_classes)
+        # Detector-side plumbing (reused from STTran baseline). Lazy-imported
+        # so that Python can import APTModel on machines where the CUDA
+        # extensions required by ``lib.sttran`` are not built (e.g. macOS
+        # CPU-only development).
+        if use_detector_head:
+            ObjectClassifier = _lazy_import_object_classifier()
+            self.object_classifier = ObjectClassifier(mode=mode, obj_classes=obj_classes)
+        else:
+            self.object_classifier = None
 
         # --- M_o: 2048 -> visual_dim (512)
         self.obj_proj = nn.Linear(2048, visual_dim)
         # --- phi(b): 3-FC MLP -> box_embed_dim (128)
         self.box_mlp = _BoxMLP(out_dim=box_embed_dim, dropout=dropout)
-        # --- semantic embedding: category distribution (n_obj_classes) -> semantic_dim
-        embed_vecs = obj_edge_vectors(obj_classes, wv_type='glove.6B',
-                                      wv_dir='data', wv_dim=semantic_dim)
+        # --- semantic embedding: category distribution (n_obj_classes) -> semantic_dim.
+        # If GloVe is unavailable (no internet / no ``data/`` dir) we fall back
+        # to random init so that the rest of the architecture can still be
+        # exercised. Real training will always want ``use_glove=True``.
         self.obj_embed = nn.Embedding(len(obj_classes), semantic_dim)
-        self.obj_embed.weight.data = embed_vecs.clone()
         self.obj_embed2 = nn.Embedding(len(obj_classes), semantic_dim)
-        self.obj_embed2.weight.data = embed_vecs.clone()
+        if use_glove:
+            try:
+                obj_edge_vectors = _lazy_import_obj_edge_vectors()
+                embed_vecs = obj_edge_vectors(obj_classes, wv_type='glove.6B',
+                                              wv_dir='data', wv_dim=semantic_dim)
+                self.obj_embed.weight.data = embed_vecs.clone()
+                self.obj_embed2.weight.data = embed_vecs.clone()
+            except Exception as e:  # pragma: no cover - defensive fallback
+                print(f"[APTModel] GloVe unavailable, using random semantic "
+                      f"embeddings. Reason: {type(e).__name__}: {e}")
 
         # --- union feature compressor (M_u)
         self.union_compressor = _UnionCompressor(
@@ -421,12 +454,25 @@ class APTModel(nn.Module):
                 target_frame_idx: int) -> Dict[str, torch.Tensor]:
         """Dispatches to the appropriate forward depending on ``self.stage``.
 
-        ``entry`` must already be populated by the detector + ObjectClassifier.
-        ``target_frame_idx`` is the frame index (within this entry) whose
-        scene-graph relations we want to predict.
+        ``entry`` must already be populated by the detector. If
+        ``use_detector_head`` was True at construction time, the embedded
+        ``ObjectClassifier`` is applied first (reproducing the STTran
+        baseline's sgcls/sgdet label refinement step); otherwise the entry is
+        consumed as-is — useful for offline smoke testing with synthetic
+        entries.
         """
-        entry = self.object_classifier(entry)
+        if self.object_classifier is not None:
+            entry = self.object_classifier(entry)
+        return self.forward_from_entry(entry, target_frame_idx)
 
+    def forward_from_entry(self, entry: Dict[str, torch.Tensor],
+                           target_frame_idx: int) -> Dict[str, torch.Tensor]:
+        """APT forward that assumes ``entry`` is fully populated.
+
+        Skips ``ObjectClassifier`` entirely: callers are expected to have
+        produced a dict with the fields documented in the module docstring.
+        This is the path used by ``scripts/smoke_test_apt_full`` on macOS.
+        """
         f_all = self._build_object_features(entry)
         fhat_all = self._apply_spatial_encoder_per_frame(f_all, entry["boxes"][:, 0].long())
         rel_features = self._build_relationship_features(fhat_all, entry)

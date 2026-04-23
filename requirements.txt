@@ -1,0 +1,34 @@
+# Minimum Python packages to run the APT code in this repository.
+# Pinned to the versions we know are compatible with the APT model
+# (Anticipatory Pre-Training, Li et al. CVPR 2022) and with the
+# underlying STTran / Faster R-CNN plumbing inherited from yrcong/STTran.
+#
+# NB: Training end-to-end on Action Genome additionally requires:
+#   * A CUDA toolchain to compile ``fasterRCNN/lib/model/_C`` and the
+#     cython helpers under ``lib/draw_rectangles`` and
+#     ``lib/fpn/box_intersections_cpu``.
+#   * The ``faster_rcnn_ag.pth`` checkpoint from the STTran Google Drive.
+#   * The Action Genome dataset (frames/ + annotations/).
+# None of those are pip-installable and are documented in README.md.
+
+# --- Deep learning core
+torch>=1.8,<3.0
+torchvision>=0.9
+
+# --- Numerical / IO
+numpy>=1.20
+scipy>=1.6         # dataloader uses legacy scipy.misc.imread when available
+imageio>=2.9       # fallback when scipy.misc.imread is missing (Py>=3.9)
+pillow>=8.0
+
+# --- Progress bars / word vectors
+tqdm>=4.60
+six>=1.15          # required by lib/word_vectors.py
+
+# --- Build helpers for the cython extensions (used only at install time)
+cython>=0.29
+
+# --- Optional: PyYAML for richer YAML support. The built-in
+# ``_simple_yaml_load`` in lib/apt_config.py does not need it, but users may
+# prefer full YAML semantics for custom configs.
+# pyyaml>=6.0
