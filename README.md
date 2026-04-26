@@ -24,7 +24,12 @@ We run the code on a single RTX2080ti for both training and testing. We borrowed
 ## Usage
 We use python=3.6, pytorch=1.1 and torchvision=0.3 in our code. First, clone the repository:
 ```
-git clone https://github.com/yrcong/STTran.git
+git clone --recurse-submodules https://github.com/TommasoAiello08/STTran.git
+cd STTran
+```
+If you already cloned without submodules:
+```
+git submodule update --init --recursive
 ```
 We borrow some compiled code for bbox operations.
 ```
@@ -41,12 +46,15 @@ fasterRCNN/models/faster_rcnn_ag.pth
 ```
 
 ## Dataset
-We use the dataset [Action Genome](https://www.actiongenome.org/#download) to train/evaluate our method. Please process the downloaded dataset with the [Toolkit](https://github.com/JingweiJ/ActionGenome). The directories of the dataset should look like:
+We use the dataset [Action Genome](https://www.actiongenome.org/#download) to train/evaluate our method. This repository vendors the official ActionGenome toolkit as a git submodule in `ActionGenome/`.
+
+Dataset files are intentionally ignored (too large). Put the processed dataset under `dataset/ag/` so the directories look like:
 ```
-|-- action_genome
-    |-- annotations   #gt annotations
-    |-- frames        #sampled frames
-    |-- videos        #original videos
+|-- dataset
+    |-- ag
+        |-- annotations   # gt annotations
+        |-- frames        # sampled frames
+        |-- videos        # original videos
 ```
  In the experiments for SGCLS/SGDET, we only keep bounding boxes with short edges larger than 16 pixels. Please download the file [object_bbox_and_relationship_filtersmall.pkl](https://drive.google.com/file/d/19BkAwjCw5ByyGyZjFo174Oc3Ud56fkaT/view?usp=sharing) and put it in the ```dataloader```
 

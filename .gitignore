@@ -1,0 +1,23 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Virtualenv / IDE
+.venv/
+.idea/
+
+# Large local artifacts (datasets, weights, pickles)
+*.pkl
+*.pth
+*.pt
+*.ckpt
+
+# Keep only Action Genome dataset folder skeleton in-repo
+dataset/**
+!dataset/
+!dataset/ag/
+!dataset/ag/annotations/
+!dataset/ag/frames/
+!dataset/ag/videos/
+!dataset/ag/.gitignore
+

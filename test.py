@@ -46,7 +46,8 @@ evaluator1 = BasicSceneGraphEvaluator(
     AG_spatial_predicates=AG_dataset.spatial_relationships,
     AG_contacting_predicates=AG_dataset.contacting_relationships,
     iou_threshold=0.5,
-    constraint='with')
+    constraint='with'
+)
 
 evaluator2 = BasicSceneGraphEvaluator(
     mode=conf.mode,
