@@ -1,49 +1,58 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 import torch
 from torch import nn
-from torch.autograd import Function
-from torch.autograd.function import once_differentiable
 from torch.nn.modules.utils import _pair
 
-from fasterRCNN.lib.model import _C
+try:
+    from fasterRCNN.lib.model import _C  # type: ignore
+    from torch.autograd import Function
+    from torch.autograd.function import once_differentiable
 
+    class _ROIPool(Function):
+        @staticmethod
+        def forward(ctx, input, roi, output_size, spatial_scale):
+            ctx.output_size = _pair(output_size)
+            ctx.spatial_scale = spatial_scale
+            ctx.input_shape = input.size()
+            output, argmax = _C.roi_pool_forward(
+                input, roi, spatial_scale, output_size[0], output_size[1]
+            )
+            ctx.save_for_backward(input, roi, argmax)
+            return output
 
-class _ROIPool(Function):
-    @staticmethod
-    def forward(ctx, input, roi, output_size, spatial_scale):
-        ctx.output_size = _pair(output_size)
-        ctx.spatial_scale = spatial_scale
-        ctx.input_shape = input.size()
-        output, argmax = _C.roi_pool_forward(
-            input, roi, spatial_scale, output_size[0], output_size[1]
-        )
-        ctx.save_for_backward(input, roi, argmax)
-        return output
+        @staticmethod
+        @once_differentiable
+        def backward(ctx, grad_output):
+            input, rois, argmax = ctx.saved_tensors
+            output_size = ctx.output_size
+            spatial_scale = ctx.spatial_scale
+            bs, ch, h, w = ctx.input_shape
+            grad_input = _C.roi_pool_backward(
+                grad_output,
+                input,
+                rois,
+                argmax,
+                spatial_scale,
+                output_size[0],
+                output_size[1],
+                bs,
+                ch,
+                h,
+                w,
+            )
+            return grad_input, None, None, None
 
-    @staticmethod
-    @once_differentiable
-    def backward(ctx, grad_output):
-        input, rois, argmax = ctx.saved_tensors
-        output_size = ctx.output_size
-        spatial_scale = ctx.spatial_scale
-        bs, ch, h, w = ctx.input_shape
-        grad_input = _C.roi_pool_backward(
-            grad_output,
+    roi_pool = _ROIPool.apply
+except Exception:
+    from torchvision.ops import roi_pool as _tv_roi_pool
+
+    def roi_pool(input, roi, output_size, spatial_scale):
+        return _tv_roi_pool(
             input,
-            rois,
-            argmax,
-            spatial_scale,
-            output_size[0],
-            output_size[1],
-            bs,
-            ch,
-            h,
-            w,
+            roi,
+            output_size=_pair(output_size),
+            spatial_scale=spatial_scale,
         )
-        return grad_input, None, None, None
-
-
-roi_pool = _ROIPool.apply
 
 
 class ROIPool(nn.Module):

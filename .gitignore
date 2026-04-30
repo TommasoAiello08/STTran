@@ -1,9 +1,11 @@
 # Python caches
 __pycache__/
 *.py[cod]
+.DS_Store
 
 # Virtualenv / IDE
 .venv/
+.venv.bak/
 .idea/
 
 # Large local artifacts (datasets, weights, pickles)
@@ -11,6 +13,22 @@ __pycache__/
 *.pth
 *.pt
 *.ckpt
+*.tar
+*.so
+
+# Build artifacts
+**/build/
+**/*.egg-info/
+
+# Generated outputs / logs
+output/
+output/** 
+pretrained/
+ckpts/
+
+# Downloaded word vectors
+data/glove.6B.*
+data/*.zip
 
 # Keep only Action Genome dataset folder skeleton in-repo
 dataset/**

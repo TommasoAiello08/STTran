@@ -2,6 +2,7 @@
 Let's get the relationships yo
 """
 
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,7 +11,46 @@ from lib.word_vectors import obj_edge_vectors
 from lib.transformer import transformer
 from lib.fpn.box_utils import center_size
 from fasterRCNN.lib.model.roi_layers import ROIAlign, nms
-from lib.draw_rectangles.draw_rectangles import draw_union_boxes
+
+# NOTE: Avoid importing the optional Cython extension for union-box masks.
+# It can be hard to build / unstable on some macOS setups.
+def draw_union_boxes(pair_rois, size):
+    """
+    Pure-Python spatial mask renderer.
+
+    pair_rois: (R, 8) array [sx1,sy1,sx2,sy2, ox1,oy1,ox2,oy2]
+    returns: (R, 2, size, size) float32 mask with {0,1}
+    """
+    pair_rois = np.asarray(pair_rois, dtype=np.float32)
+    R = pair_rois.shape[0]
+    masks = np.zeros((R, 2, size, size), dtype=np.float32)
+    if R == 0:
+        return masks
+
+    for i in range(R):
+        sx1, sy1, sx2, sy2, ox1, oy1, ox2, oy2 = pair_rois[i]
+        ux1 = min(sx1, ox1)
+        uy1 = min(sy1, oy1)
+        ux2 = max(sx2, ox2)
+        uy2 = max(sy2, oy2)
+        uw = max(1.0, ux2 - ux1)
+        uh = max(1.0, uy2 - uy1)
+
+        def _rasterize(ch, x1, y1, x2, y2):
+            nx1 = int((x1 - ux1) / uw * (size - 1))
+            ny1 = int((y1 - uy1) / uh * (size - 1))
+            nx2 = int((x2 - ux1) / uw * (size - 1))
+            ny2 = int((y2 - uy1) / uh * (size - 1))
+            x1i = max(0, min(size - 1, min(nx1, nx2)))
+            x2i = max(0, min(size - 1, max(nx1, nx2)))
+            y1i = max(0, min(size - 1, min(ny1, ny2)))
+            y2i = max(0, min(size - 1, max(ny1, ny2)))
+            masks[i, ch, y1i : y2i + 1, x1i : x2i + 1] = 1.0
+
+        _rasterize(0, sx1, sy1, sx2, sy2)
+        _rasterize(1, ox1, oy1, ox2, oy2)
+
+    return masks
 
 
 class ObjectClassifier(nn.Module):
@@ -297,7 +337,9 @@ class STTran(nn.Module):
         self.obj_fc = nn.Linear(2048, 512)
         self.vr_fc = nn.Linear(256*7*7, 512)
 
-        embed_vecs = obj_edge_vectors(obj_classes, wv_type='glove.6B', wv_dir='/home/cong/Dokumente/neural-motifs-master/data', wv_dim=200)
+        # Store / reuse word vectors under this repo's local `data/` directory.
+        _repo_data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+        embed_vecs = obj_edge_vectors(obj_classes, wv_type='glove.6B', wv_dir=_repo_data_dir, wv_dim=200)
         self.obj_embed = nn.Embedding(len(obj_classes), 200)
         self.obj_embed.weight.data = embed_vecs.clone()
 

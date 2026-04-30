@@ -128,16 +128,20 @@ class transformer(nn.Module):
 
 
     def forward(self, features, im_idx):
-        rel_idx = torch.arange(im_idx.shape[0])
+        rel_idx = torch.arange(im_idx.shape[0], device=im_idx.device)
 
-        l = torch.sum(im_idx == torch.mode(im_idx)[0])  # the highest box number in the single frame
+        # `torch.mode` is not implemented on all backends (e.g. MPS).
+        # We only need the maximum count of any frame id in `im_idx`.
+        uniq, counts = torch.unique(im_idx, return_counts=True)
+        mode_val = uniq[counts.argmax()]
+        l = torch.sum(im_idx == mode_val)  # highest relation count in a single frame
         b = int(im_idx[-1] + 1)
         rel_input = torch.zeros([l, b, features.shape[1]]).to(features.device)
-        masks = torch.zeros([b, l], dtype=torch.uint8).to(features.device)
+        masks = torch.zeros([b, l], dtype=torch.bool, device=features.device)
         # TODO Padding/Mask maybe don't need for-loop
         for i in range(b):
             rel_input[:torch.sum(im_idx == i), i, :] = features[im_idx == i]
-            masks[i, torch.sum(im_idx == i):] = 1
+            masks[i, torch.sum(im_idx == i):] = True
 
         # spatial encoder
         local_output, local_attention_weights = self.local_attention(rel_input, masks)
