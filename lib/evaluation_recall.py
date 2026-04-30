@@ -3,7 +3,20 @@ import torch.nn as nn
 import numpy as np
 from functools import reduce
 from lib.ults.pytorch_misc import intersect_2d, argsort_desc
-from lib.fpn.box_intersections_cpu.bbox import bbox_overlaps
+from torchvision.ops import box_iou
+
+# NOTE: we intentionally avoid importing the optional Cython extension here.
+# On some macOS toolchains it can segfault at import time; TorchVision keeps
+# evaluation functional.
+def bbox_overlaps(boxes1, boxes2):
+    """
+    boxes1: (N,4) ndarray-like [x1,y1,x2,y2]
+    boxes2: (M,4) ndarray-like [x1,y1,x2,y2]
+    returns: (N,M) ndarray IoU matrix
+    """
+    b1 = torch.as_tensor(boxes1, dtype=torch.float32)
+    b2 = torch.as_tensor(boxes2, dtype=torch.float32)
+    return box_iou(b1, b2).cpu().numpy()
 
 class BasicSceneGraphEvaluator:
     def __init__(self, mode, AG_object_classes, AG_all_predicates, AG_attention_predicates, AG_spatial_predicates, AG_contacting_predicates,

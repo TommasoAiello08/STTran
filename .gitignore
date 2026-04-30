@@ -1,12 +1,38 @@
-# Python
+# Python caches
 __pycache__/
 *.py[cod]
 *.egg-info/
+.DS_Store
 
-# Environments
+# Virtualenv / IDE
 .venv/
+.venv.bak/
 .env
 venv/
+.idea/
+.vscode/
+
+# Large local artifacts (datasets, weights, pickles)
+*.pkl
+*.pth
+*.pt
+*.ckpt
+*.tar
+*.so
+
+# Build artifacts
+**/build/
+**/*.egg-info/
+
+# Generated outputs / logs
+output/
+pretrained/
+ckpts/
+
+# Downloaded word vectors
+data/glove.6B.*
+data/*.zip
+data/*.txt
 
 # APT / STTran checkpoints and run artefacts
 data/apt_pretrain/
@@ -15,7 +41,11 @@ data/apt_pretrain_*/
 data/apt_finetune_*/
 fasterRCNN/models/*.pth
 
-# Editor / OS
-.DS_Store
-.idea/
-.vscode/
+# Keep only Action Genome dataset folder skeleton in-repo
+dataset/**
+!dataset/
+!dataset/ag/
+!dataset/ag/annotations/
+!dataset/ag/frames/
+!dataset/ag/videos/
+!dataset/ag/.gitignore

@@ -1,0 +1,10 @@
+# Ignore all dataset contents; keep folder skeleton via .gitkeep
+*
+!.gitignore
+!annotations/
+!frames/
+!videos/
+!annotations/.gitkeep
+!frames/.gitkeep
+!videos/.gitkeep
+

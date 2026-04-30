@@ -1,8 +1,35 @@
 import torch
 import numpy as np
 from torch.nn import functional as F
-from lib.fpn.box_intersections_cpu.bbox import bbox_overlaps as bbox_overlaps_np
-from lib.fpn.box_intersections_cpu.bbox import bbox_intersections as bbox_intersections_np
+
+# NOTE: We intentionally avoid importing the optional Cython extensions in
+# `lib/fpn/box_intersections_cpu/` because they can be hard to build (or even
+# segfault at import time) on some macOS setups. The NumPy paths below use a
+# pure-NumPy implementation instead.
+
+def _bbox_intersections_np(box_a: np.ndarray, box_b: np.ndarray) -> np.ndarray:
+    """
+    box_a: (A,4) xyxy
+    box_b: (B,4) xyxy
+    returns: (A,B) intersection areas
+    """
+    A = box_a.shape[0]
+    B = box_b.shape[0]
+    max_xy = np.minimum(box_a[:, None, 2:4], box_b[None, :, 2:4])
+    min_xy = np.maximum(box_a[:, None, 0:2], box_b[None, :, 0:2])
+    inter = np.clip(max_xy - min_xy + 1.0, a_min=0.0, a_max=None)
+    return inter[:, :, 0] * inter[:, :, 1]
+
+
+def _bbox_overlaps_np(box_a: np.ndarray, box_b: np.ndarray) -> np.ndarray:
+    """
+    IoU(box_a, box_b) for NumPy arrays.
+    """
+    inter = _bbox_intersections_np(box_a, box_b)
+    area_a = ((box_a[:, 2] - box_a[:, 0] + 1.0) * (box_a[:, 3] - box_a[:, 1] + 1.0))[:, None]
+    area_b = ((box_b[:, 2] - box_b[:, 0] + 1.0) * (box_b[:, 3] - box_b[:, 1] + 1.0))[None, :]
+    union = area_a + area_b - inter
+    return inter / np.clip(union, a_min=1e-12, a_max=None)
 
 
 def bbox_loss(prior_boxes, deltas, gt_boxes, eps=1e-4, scale_before=1):
@@ -95,7 +122,7 @@ def bbox_intersections(box_a, box_b):
     """
     if isinstance(box_a, np.ndarray):
         assert isinstance(box_b, np.ndarray)
-        return bbox_intersections_np(box_a, box_b)
+        return _bbox_intersections_np(box_a, box_b)
     A = box_a.size(0)
     B = box_b.size(0)
     max_xy = torch.min(box_a[:, 2:].unsqueeze(1).expand(A, B, 2),
@@ -120,7 +147,7 @@ def bbox_overlaps(box_a, box_b):
     """
     if isinstance(box_a, np.ndarray):
         assert isinstance(box_b, np.ndarray)
-        return bbox_overlaps_np(box_a, box_b)
+        return _bbox_overlaps_np(box_a, box_b)
 
     inter = bbox_intersections(box_a, box_b)
     area_a = ((box_a[:, 2] - box_a[:, 0] + 1.0) *

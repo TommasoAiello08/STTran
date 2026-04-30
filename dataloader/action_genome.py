@@ -3,7 +3,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision.transforms import Resize, Compose, ToTensor, Normalize
 import random
-from scipy.misc import imread
+import imageio.v2 as imageio
 import numpy as np
 import pickle
 import os
@@ -59,16 +59,16 @@ class AG(Dataset):
         print('-------loading annotations---------slowly-----------')
 
         if filter_small_box:
-            with open(root_path + 'annotations/person_bbox.pkl', 'rb') as f:
+            with open(os.path.join(root_path, 'annotations', 'person_bbox.pkl'), 'rb') as f:
                 person_bbox = pickle.load(f)
             f.close()
             with open('dataloader/object_bbox_and_relationship_filtersmall.pkl', 'rb') as f:
                 object_bbox = pickle.load(f)
         else:
-            with open(root_path + 'annotations/person_bbox.pkl', 'rb') as f:
+            with open(os.path.join(root_path, 'annotations', 'person_bbox.pkl'), 'rb') as f:
                 person_bbox = pickle.load(f)
             f.close()
-            with open(root_path+'annotations/object_bbox_and_relationship.pkl', 'rb') as f:
+            with open(os.path.join(root_path, 'annotations', 'object_bbox_and_relationship.pkl'), 'rb') as f:
                 object_bbox = pickle.load(f)
             f.close()
         print('--------------------finish!-------------------------')
@@ -165,7 +165,7 @@ class AG(Dataset):
         im_scales = []
 
         for idx, name in enumerate(frame_names):
-            im = imread(os.path.join(self.frames_path, name)) # channel h,w,3
+            im = imageio.imread(os.path.join(self.frames_path, name)) # channel h,w,3
             im = im[:, :, ::-1] # rgb -> bgr
             im, im_scale = prep_im_for_blob(im, [[[102.9801, 115.9465, 122.7717]]], 600, 1000) #cfg.PIXEL_MEANS, target_size, cfg.TRAIN.MAX_SIZE
             im_scales.append(im_scale)
