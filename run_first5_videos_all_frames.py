@@ -19,11 +19,18 @@ Env vars:
   AG_DATA_PATH: required, path to dataset/ag
   STTRAN_CKPT: optional, default ckpts/sttran_predcls.tar
   MAX_RELS: optional, max printed relations per frame (default 20)
+  SPLIT: 'train' or 'test' (default 'test')
+  VIDEO_IDS: optional comma-separated list of video ids (e.g. '0A8CF.mp4,02DPI.mp4').
+             If set, the script will run only these videos (must exist in the chosen SPLIT after filtering).
+  VIDEO_AFTER: optional single video id; if set (and VIDEO_IDS is not set), pick videos *after* this id.
+  VIDEO_LIMIT: optional int; if set (and VIDEO_IDS is not set), limit number of selected videos (default 5).
+  VIZ_LAYOUT: 'circular' (fast) or 'spring' (slow, nicer)
+  VIZ_REUSE_LAYOUT: '1' to reuse node positions across frames (faster)
+  FRAME_OFFSET / FRAME_LIMIT: optional ints to process only a subset of frames per video
 """
 
 from __future__ import annotations
 
-import copy
 import os
 from collections import OrderedDict
 from typing import Dict, List, Tuple
@@ -34,7 +41,12 @@ import torch
 from dataloader.action_genome import AG
 from lib.object_detector import detector
 from lib.sttran import STTran
-from viz_terminal_scene_graphs import parse_terminal_log, render_frame_png, maybe_write_timeline_gif
+from viz_terminal_scene_graphs import (
+    parse_terminal_log,
+    render_frame_png,
+    maybe_write_timeline_gif,
+    render_edge_evolution_png,
+)
 
 
 def pick_device() -> torch.device:
@@ -70,10 +82,31 @@ def topk_indices(scores: np.ndarray, k: int) -> List[Tuple[int, float]]:
     idx = idx[np.argsort(-scores[idx])]
     return [(int(i), float(scores[i])) for i in idx]
 
+def _id_to_char(i: int) -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    if 0 <= i < len(alphabet):
+        return alphabet[i]
+    return "?"
+
+def _edge_prefix(group: str) -> str:
+    if group == "att":
+        return "@"
+    if group == "spatial":
+        return "^"
+    return "+"
+
 
 def ensure_dirs(*paths: str):
     for p in paths:
         os.makedirs(p, exist_ok=True)
+
+def _safe_stem(frame_rel: str) -> str:
+    """
+    frame_rel looks like '<VIDEO_ID>.mp4/000089.png'. We want '000089' as stem.
+    """
+    base = os.path.basename(frame_rel)
+    stem, _ = os.path.splitext(base)
+    return stem
 
 
 def main():
@@ -86,6 +119,9 @@ def main():
     split = os.environ.get("SPLIT", "test").strip().lower()
     if split not in ("train", "test"):
         raise SystemExit("SPLIT must be 'train' or 'test'")
+    video_ids_override = os.environ.get("VIDEO_IDS")
+    video_after = os.environ.get("VIDEO_AFTER")
+    video_limit = int(os.environ.get("VIDEO_LIMIT", "5"))
 
     device = pick_device()
     print(f"device: {device}")
@@ -113,17 +149,31 @@ def main():
         if vid not in video_to_idx:
             video_to_idx[vid] = idx
 
-    # Choose 5 videos that exist in this split, preferring order from frame_list.txt.
-    requested = first_n_videos_from_frame_list(frame_list_path, n=5000)
-    vids: List[str] = []
-    for v in requested:
-        if v in video_to_idx:
-            vids.append(v)
-        if len(vids) == 5:
-            break
-    if len(vids) < 5:
-        # Fallback: just take first 5 available videos in this split
-        vids = list(OrderedDict.fromkeys(video_to_idx.keys()))[:5]
+    if video_ids_override:
+        vids = [v.strip() for v in video_ids_override.split(",") if v.strip()]
+        missing = [v for v in vids if v not in video_to_idx]
+        if missing:
+            raise SystemExit(
+                "These videos were not found in the loader split (after filters). "
+                f"Try a different SPLIT or disable filtering. Missing: {missing}"
+            )
+    else:
+        # Choose 5 videos that exist in this split, preferring order from frame_list.txt.
+        requested = first_n_videos_from_frame_list(frame_list_path, n=5000)
+        ordered_available = [v for v in requested if v in video_to_idx]
+        if not ordered_available:
+            # Fallback: just take first 5 available videos in this split
+            ordered_available = list(OrderedDict.fromkeys(video_to_idx.keys()))
+
+        start_idx = 0
+        if video_after:
+            try:
+                start_idx = ordered_available.index(video_after) + 1
+            except ValueError:
+                # If the requested anchor isn't in this split, keep start at 0
+                start_idx = 0
+
+        vids = ordered_available[start_idx : start_idx + max(1, video_limit)]
     print("videos:", vids)
 
     # Load detector + STTran once
@@ -148,6 +198,13 @@ def main():
     out_logs_root = os.path.abspath(os.path.join(os.getcwd(), "output", "logs", "first5_videos"))
     out_viz_root = os.path.abspath(os.path.join(os.getcwd(), "output", "first5_videos"))
     ensure_dirs(out_logs_root, out_viz_root)
+    viz_layout = os.environ.get("VIZ_LAYOUT", "circular").strip().lower()
+    reuse_layout = os.environ.get("VIZ_REUSE_LAYOUT", "1").strip() not in ("0", "false", "no")
+    frame_offset = int(os.environ.get("FRAME_OFFSET", "0"))
+    frame_limit_env = os.environ.get("FRAME_LIMIT")
+    frame_limit = int(frame_limit_env) if frame_limit_env is not None else None
+    topk_per_group = int(os.environ.get("TOPK_PER_GROUP", "1"))
+    edge_thresh = float(os.environ.get("EDGE_THRESH", "0.0"))
 
     for vid in vids:
         ds_idx = video_to_idx[vid]
@@ -157,20 +214,34 @@ def main():
         im_data, im_info, gt_boxes, num_boxes, _ = ds[ds_idx]
         gt_annotation_video = ds.gt_annotations[ds_idx]
 
+        T_full = im_data.shape[0]
+        # Subsample frames to speed up compute (forward passes are dominated by the detector)
+        start = max(0, min(frame_offset, T_full))
+        end = T_full if frame_limit is None else max(start, min(T_full, start + frame_limit))
+        sel = slice(start, end)
+        im_data = im_data[sel]
+        im_info = im_info[sel]
+        gt_boxes = gt_boxes[sel]
+        num_boxes = num_boxes[sel]
+        gt_annotation_video = gt_annotation_video[sel]
+
         T = im_data.shape[0]
         print(f"annotated frames in loader: {T}")
 
-        im_data = copy.deepcopy(im_data).to(device)
-        im_info = copy.deepcopy(im_info).to(device)
-        gt_boxes = copy.deepcopy(gt_boxes).to(device)
-        num_boxes = copy.deepcopy(num_boxes).to(device)
+        # Avoid deepcopy here; tensors coming from the dataset can be moved directly.
+        im_data = im_data.to(device)
+        im_info = im_info.to(device)
+        gt_boxes = gt_boxes.to(device)
+        num_boxes = num_boxes.to(device)
 
-        log_path = os.path.join(out_logs_root, f"{vid}.log")
+        suffix = f"_off{start}_n{T}" if (start != 0 or frame_limit is not None) else ""
+        log_path = os.path.join(out_logs_root, f"{vid}{suffix}.log")
         with open(log_path, "w") as log:
             log.write(f"video: {vid}\n")
             log.write(f"frames: {T}\n")
+            log.write(f"frame_offset: {start}\n")
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 entry = det(im_data, im_info, gt_boxes, num_boxes, gt_annotation_video, im_all=None)
                 pred = model(entry)
 
@@ -184,23 +255,26 @@ def main():
                 im_idx_int = im_idx_cpu.long()
             else:
                 im_idx_int = im_idx_cpu
+            im_idx_np = im_idx_int.numpy()
 
             pair_idx_all = pred["pair_idx"].detach().cpu().numpy()
             att_all = torch.softmax(pred["attention_distribution"].detach().cpu(), dim=1).numpy()
-            spa_all = pred["spatial_distribution"].detach().cpu().numpy()
-            con_all = pred["contacting_distribution"].detach().cpu().numpy()
+            spa_all = torch.softmax(pred["spatial_distribution"].detach().cpu(), dim=1).numpy()
+            con_all = torch.softmax(pred["contacting_distribution"].detach().cpu(), dim=1).numpy()
 
             for frame_i in range(T):
                 node_ids = np.where(boxes[:, 0] == frame_i)[0].tolist()
-                log.write(f"\n=== Nodes (frame {frame_i}) ===\n")
+                # keep original frame index in the header for mapping/visualization
+                orig_frame_i = start + frame_i
+                log.write(f"\n=== Nodes (frame {orig_frame_i}) ===\n")
                 for ni in node_ids:
                     cls = ds.object_classes[int(labels[ni])]
                     x1, y1, x2, y2 = boxes[ni, 1:].tolist()
                     log.write(f"  id={ni:3d}  {cls:18s}  box=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f})\n")
 
-                log.write(f"\n=== Predicted relations (frame {frame_i}) ===\n")
+                log.write(f"\n=== Predicted relations (frame {orig_frame_i}) ===\n")
 
-                mask = (im_idx_int.numpy() == frame_i)
+                mask = (im_idx_np == frame_i)
                 rel_ids = np.where(mask)[0]
                 shown = 0
                 for rid in rel_ids:
@@ -208,38 +282,111 @@ def main():
                     subj = ds.object_classes[int(labels[s])]
                     obj = ds.object_classes[int(labels[o])]
 
-                    att_i = int(att_all[rid].argmax())
-                    att_name = ds.attention_relationships[att_i]
-                    att_score = float(att_all[rid, att_i])
+                    top_att = topk_indices(att_all[rid], k=topk_per_group)
+                    top_spa = topk_indices(spa_all[rid], k=topk_per_group)
+                    top_con = topk_indices(con_all[rid], k=topk_per_group)
 
-                    top_spa = topk_indices(spa_all[rid], k=2)
-                    top_con = topk_indices(con_all[rid], k=2)
-                    spa_str = ", ".join(f"{ds.spatial_relationships[i]}:{sc:.2f}" for i, sc in top_spa)
-                    con_str = ", ".join(f"{ds.contacting_relationships[i]}:{sc:.2f}" for i, sc in top_con)
+                    # Attention: write one att line per predicate (so parser can build multiple @ edges)
+                    wrote_any_att = False
+                    for att_i, att_sc in top_att:
+                        if att_sc < edge_thresh:
+                            continue
+                        att_name = ds.attention_relationships[int(att_i)]
+                        log.write(f"  ({s}) {subj}  --att[{att_name}:{att_sc:.2f}]-->  ({o}) {obj}\n")
+                        wrote_any_att = True
+                        shown += 1
+                        if shown >= max_rels:
+                            break
+                    if shown >= max_rels:
+                        break
 
-                    log.write(f"  ({s}) {subj}  --att[{att_name}:{att_score:.2f}]-->  ({o}) {obj}\n")
-                    log.write(f"        spatial top: {spa_str}\n")
-                    log.write(f"        contact  top: {con_str}\n")
+                    # Only attach spatial/contact "top:" blocks to the *last* attention line we wrote
+                    # (the parser uses pending_pair from the most recent att line).
+                    if wrote_any_att:
+                        spa_items = [(i, sc) for (i, sc) in top_spa if sc >= edge_thresh]
+                        con_items = [(i, sc) for (i, sc) in top_con if sc >= edge_thresh]
+                        spa_str = ", ".join(f"{ds.spatial_relationships[i]}:{sc:.2f}" for i, sc in spa_items)
+                        con_str = ", ".join(f"{ds.contacting_relationships[i]}:{sc:.2f}" for i, sc in con_items)
+                        log.write(f"        spatial top: {spa_str}\n")
+                        log.write(f"        contact  top: {con_str}\n")
 
-                    shown += 1
                     if shown >= max_rels:
                         break
 
         # Render visuals using the same parser/renderer
-        frames = parse_terminal_log(log_path, topk_spatial=1, topk_contact=1)
+        frames = parse_terminal_log(log_path, topk_spatial=topk_per_group, topk_contact=topk_per_group)
         out_dir = os.path.join(out_viz_root, vid)
         ensure_dirs(out_dir)
 
+        # Map each loader frame index -> original frame filename
+        frame_rels = ds.video_list[ds_idx]  # list of '<VIDEO>/<FRAME>.png'
+        mapping_csv = os.path.join(out_dir, "mapping.csv")
+        with open(mapping_csv, "w") as mf:
+            mf.write("frame_idx,frame_rel,graph_png,legend_txt\n")
+            for i, fr_rel in enumerate(frame_rels):
+                stem = _safe_stem(fr_rel)
+                mf.write(f"{i},{fr_rel},{stem}.png,legend_{stem}.txt\n")
+
         pngs: List[str] = []
+        pos_cache = None
         for fi in sorted(frames.keys()):
             fr = frames[fi]
-            out_png = os.path.join(out_dir, f"frame_{fi:03d}.png")
-            legend_txt = os.path.join(out_dir, f"legend_frame_{fi:03d}.txt")
-            render_frame_png(fr, out_png=out_png, legend_txt=legend_txt, max_edges=30)
+            stem = _safe_stem(frame_rels[fi]) if fi < len(frame_rels) else f"frame_{fi:03d}"
+            out_png = os.path.join(out_dir, f"{stem}.png")
+            legend_txt = os.path.join(out_dir, f"legend_{stem}.txt")
+            if reuse_layout and pos_cache is None:
+                try:
+                    import networkx as nx
+
+                    G0 = nx.DiGraph()
+                    for nid in fr.nodes.keys():
+                        G0.add_node(nid)
+                    if viz_layout == "spring":
+                        pos_cache = nx.spring_layout(G0, seed=7, k=1.2)
+                    else:
+                        pos_cache = nx.circular_layout(G0)
+                except Exception:
+                    pos_cache = None
+
+            render_frame_png(
+                fr,
+                out_png=out_png,
+                legend_txt=legend_txt,
+                max_edges=0,  # draw all edges we logged (top-1 per group per pair)
+                layout="spring" if viz_layout == "spring" else "circular",
+                pos_override=pos_cache,
+            )
             pngs.append(out_png)
 
         maybe_write_timeline_gif(pngs, out_gif=os.path.join(out_dir, "timeline.gif"), fps=2)
+        render_edge_evolution_png(frames, out_png=os.path.join(out_dir, "edge_evolution.png"), min_score=edge_thresh)
         print(f"wrote {len(pngs)} graphs to {out_dir}")
+
+        # One per-video report (all frames, all nodes, all edges)
+        report_path = os.path.join(out_dir, "report.txt")
+        with open(report_path, "w") as rf:
+            rf.write(f"video: {vid}\n")
+            rf.write(f"split: {split}\n")
+            rf.write("edge legend: @=attention, ^=spatial (object->human), +=contact\n\n")
+
+            for fi in sorted(frames.keys()):
+                fr = frames[fi]
+                frame_rel = frame_rels[fi] if fi < len(frame_rels) else ""
+                stem = _safe_stem(frame_rel) if frame_rel else f"frame_{fi:03d}"
+                rf.write(f"=== frame {fi} ({frame_rel}) ===\n")
+                rf.write("Nodes:\n")
+                for nid, node in sorted(fr.nodes.items(), key=lambda kv: kv[0]):
+                    rf.write(f"  {_id_to_char(nid)} id={nid} cls={node.cls}\n")
+                rf.write("Edges (top-1 per group per pair):\n")
+                for e in fr.edges:
+                    src_cls = fr.nodes.get(e.src).cls if e.src in fr.nodes else f"id{e.src}"
+                    dst_cls = fr.nodes.get(e.dst).cls if e.dst in fr.nodes else f"id{e.dst}"
+                    rf.write(
+                        f"  {_edge_prefix(e.group)} "
+                        f"{_id_to_char(e.src)}({src_cls}) -> {_id_to_char(e.dst)}({dst_cls}) "
+                        f"{e.predicate} p={e.score:.4f}\n"
+                    )
+                rf.write("\n")
 
         # free some memory between videos
         del im_data, im_info, gt_boxes, num_boxes, entry, pred

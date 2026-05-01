@@ -1,0 +1,71 @@
+STTran – Work report (macOS + visualization + stats + Colab)
+
+This file summarizes the changes implemented in this repository session and how to use them.
+
+1) Portable runtime fixes (macOS / CPU / MPS)
+- Removed/avoided native Cython/C++ extension dependencies where possible by adding pure-Python / TorchVision fallbacks.
+- Device handling: avoid hardcoded CUDA calls; support cuda/mps/cpu via dynamic device selection and safe checkpoint loading.
+- Transformer fixes for MPS compatibility (e.g. replacing unsupported ops, ensuring masks are bool, avoiding device mismatches).
+
+2) Graph generation pipeline (per-video, per-frame)
+Primary script: STTran/run_first5_videos_all_frames.py
+
+What it does:
+- loads Action Genome dataset (split train/test)
+- runs STTran predcls on every annotated frame in each selected video
+- writes a terminal-style per-video log to:
+  STTran/output/logs/first5_videos/<VIDEO>.log
+- renders per-frame scene graphs + timeline GIF to:
+  STTran/output/first5_videos/<VIDEO>/
+
+Visualization features:
+- nodes always rendered (even if isolated)
+- edges drawn for all 3 groups:
+  @ attention (human -> object)
+  ^ spatial   (object -> human)
+  + contact   (human -> object)
+- MultiDiGraph rendering to support multiple edges between same node pairs
+- edge labels concatenated into one readable box per node pair (top-1 text per group)
+- optional fast layout (circular) and layout reuse across frames
+
+3) Per-video machine-readable export
+Script: STTran/export_graphs_json.py
+- Reads logs and writes STTran/output/first5_videos/<VIDEO>/graphs.json containing all nodes/edges per frame.
+
+4) Dataset/prediction statistics & plots (from logs)
+- STTran/plot_log_frequencies.py
+  - frame-normalized presence frequencies
+  - assignment-normalized frequencies (edge-normalized predicates, node-normalized object classes)
+  - per-group predicate plots (attention/spatial/contact)
+  Outputs are stored under:
+    STTran/output/first5_videos/summary_plots/
+
+- STTran/plot_predicate_score_stats.py
+  - per-group predicate score boxplots (confidence distributions)
+  - per-predicate empirical confidence stats export:
+    predicate_confidence_stats.csv/json
+
+5) Thresholded re-render (no model re-run)
+Script: STTran/rerender_with_thresholds.py
+Rule:
+- For each (src,dst) pair and each group, keep only top-1 edge if score >= threshold; otherwise keep none for that group/pair.
+Thresholds can be passed via:
+  TH_ATT, TH_SPATIAL, TH_CONTACT
+Optionally restrict to a subset via:
+  VIDEO_IDS="0A8CF.mp4,0KER3.mp4"
+
+6) Notebook replication
+Notebook: STTran/dataset_analysis.ipynb
+- Reproduces frequency plots, boxplots, confidence stats, threshold computations, and GT person deep scan.
+- Displays all summary plots inline via IPython display.
+
+7) Colab runner (generate 200 videos)
+- STTran/colab/README.md
+- STTran/colab_run_200_videos.sh
+This provides a Colab-friendly way to produce:
+  STTran/output/first5_videos/<VIDEO>.mp4/
+for many videos (e.g. VIDEO_LIMIT=200) using AG_DATA_PATH on Colab/Drive.
+
+Notes / constraints discovered:
+- Action Genome `person_bbox.pkl` contains only 0 or 1 GT person box per frame (no multi-person frames in this annotation file).
+
