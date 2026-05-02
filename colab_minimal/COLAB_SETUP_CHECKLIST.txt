@@ -32,6 +32,11 @@ B) Extend (machine-readable graphs + analysis)
 
 C) One-time Colab environment
 -----------------------------
+  0. If `git clone` says "could not read Username for 'https://github.com'": Colab is
+     using a credential helper with no TTY. The notebook uses
+     `git -c credential.helper= ...` and falls back to downloading the public
+     `archive/.../branch.zip` (no git auth). Private repo: use a PAT in GIT_REPO URL.
+
   1. Runtime: GPU (any CUDA GPU; more VRAM is faster).
 
   2. GIT_REPO / GIT_BRANCH in colab_300_videos.ipynb — must contain colab_minimal/
