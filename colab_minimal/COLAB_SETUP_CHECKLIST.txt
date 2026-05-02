@@ -46,6 +46,8 @@ C) One-time Colab environment
       • annotations.zip — AG annotations (pkls, frame_list.txt, class lists).
       • frames.zip — decoded frames as .../<VIDEO>.mp4/*.png
      Paths set as ANNOTATIONS_ZIP / FRAMES_ZIP in the notebook.
+      • Optional: copy Drive → /content before unzip (COPY_ZIPS_TO_LOCAL) — same idea as
+        copying flickr_ch4 to local disk; Drive I/O is slow for huge zips and many PNG reads.
 
   4. Notebook cells (or equivalent):
       • Mount Drive.
