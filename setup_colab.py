@@ -43,6 +43,7 @@ COLAB_PIP_EXTRAS = [
     "tqdm",
     "six",
     "cython",
+    "ninja",
 ] + EXTRA_PIP
 
 GLOVE_URL_PRIMARY = "http://nlp.stanford.edu/data/glove.6B.zip"
@@ -82,6 +83,35 @@ def _rm_globs(root: Path, pattern: str) -> None:
     for p in root.rglob(pattern):
         if p.is_file():
             p.unlink()
+
+
+def bootstrap_colab_build_env() -> None:
+    """Colab GPU runtime: ensure nvcc finds CUDA (Faster R-CNN extension build)."""
+    cuda = Path("/usr/local/cuda")
+    if cuda.is_dir():
+        os.environ.setdefault("CUDA_HOME", str(cuda))
+        os.environ["PATH"] = f"{cuda}/bin:{os.environ.get('PATH', '')}"
+        ld = os.environ.get("LD_LIBRARY_PATH", "")
+        lib64 = str(cuda / "lib64")
+        os.environ["LD_LIBRARY_PATH"] = f"{lib64}:{ld}" if ld else lib64
+    try:
+        import torch
+
+        print(f"[env] torch={torch.__version__} cuda_available={torch.cuda.is_available()}", flush=True)
+        if torch.cuda.is_available():
+            print(f"[env] cuda_device={torch.cuda.get_device_name(0)}", flush=True)
+        else:
+            print(
+                "[env] WARNING: torch.cuda.is_available() is False — compile may fail or produce CPU-only "
+                "builds. Use Runtime → Change runtime type → GPU, then rerun.",
+                flush=True,
+            )
+    except Exception as ex:
+        print(f"[env] torch import failed: {ex}", flush=True)
+    nvcc = shutil.which("nvcc")
+    print(f"[env] nvcc={nvcc}", flush=True)
+    if nvcc:
+        subprocess.run([nvcc, "--version"], check=False)
 
 
 def step_compile() -> None:
@@ -200,6 +230,7 @@ def main() -> None:
     if not args.skip_pip:
         step_pip(upgrade_pip=not args.no_upgrade_pip, colab=args.colab)
     if not args.skip_compile:
+        bootstrap_colab_build_env()
         step_compile()
     if not args.skip_glove:
         step_glove()
