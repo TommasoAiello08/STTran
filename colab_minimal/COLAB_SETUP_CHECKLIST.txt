@@ -1,0 +1,67 @@
+Colab setup checklist — replicate & extend STTran “previous outputs” layout
+==========================================================================
+
+Goal: rebuild the same artefact tree as local runs, then extend it (more videos,
+graphs.json, optional downstream plots).
+
+A) Replicate (same folder semantics as before)
+----------------------------------------------
+After the notebook or scripts finish, you should have under STTran/output/:
+
+  output/logs/first5_videos/<VIDEO_ID>.mp4.log
+    Full terminal-style log per video — source for frequency plots, predicate stats,
+    re-render thresholds (rerender_with_thresholds.py), export_graphs_json.py.
+
+  output/first5_videos/<VIDEO_ID>.mp4/
+    Per-frame scene graph PNGs, legend txt files, timeline.gif (and related viz).
+
+This comes from: python run_first5_videos_all_frames.py (VIDEO_LIMIT controls count).
+
+B) Extend (machine-readable graphs + analysis)
+----------------------------------------------
+  • graphs.json per video — run after main job:
+      cd STTran && python export_graphs_json.py
+    (notebook runs this automatically.)
+
+  • Summary plots / CSV / stats from logs — run locally or on Colab after copying logs:
+      dataset_analysis.ipynb, plot_log_frequencies.py, plot_predicate_score_stats.py
+    Point LOGS_DIR / OUT_ROOT at output/logs/first5_videos and output/first5_videos.
+
+  • Re-render viz from logs with tuned thresholds (no model re-run):
+      rerender_with_thresholds.py
+
+C) One-time Colab environment
+-----------------------------
+  1. Runtime: GPU (any CUDA GPU; more VRAM is faster).
+
+  2. GIT_REPO / GIT_BRANCH in colab_300_videos.ipynb — must contain colab_minimal/
+     and setup_colab.py (clone pulls full repo).
+
+  3. Google Drive:
+      • annotations.zip — AG annotations (pkls, frame_list.txt, class lists).
+      • frames.zip — decoded frames as .../<VIDEO>.mp4/*.png
+     Paths set as ANNOTATIONS_ZIP / FRAMES_ZIP in the notebook.
+
+  4. Notebook cells (or equivalent):
+      • Mount Drive.
+      • git clone STTran.
+      • python colab_minimal/prepare_ag_zips.py (or notebook import) → AG_ROOT.
+      • python setup_colab.py — GloVe + Faster R-CNN + STTran weights (gdown).
+      • export AG_DATA_PATH=AG_ROOT; set SPLIT, VIDEO_LIMIT, TOPK_*, MAX_RELS, etc.
+      • python -u run_first5_videos_all_frames.py
+      • python export_graphs_json.py
+      • Optional: zip output/ back to Drive.
+
+D) Matching “previous” runs (env knobs)
+---------------------------------------
+  SPLIT=test|train          — must match where your GT frames live.
+  VIDEO_LIMIT=300           — extend beyond old “5” or “200” runs.
+  TOPK_PER_GROUP, EDGE_THRESH, VIZ_LAYOUT, VIZ_REUSE_LAYOUT, MAX_RELS — same as shell scripts.
+
+E) What you do NOT upload if using setup_colab.py
+-------------------------------------------------
+  GloVe, sttran_*.tar, faster_rcnn_ag.pth, filter-small pkl — downloaded on Colab.
+
+What you MUST supply
+--------------------
+  annotations.zip + frames.zip (or full AG tree on Drive without zips — then skip unzip and set AG_DATA_PATH).

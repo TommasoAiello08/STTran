@@ -1,0 +1,18 @@
+Minimal Colab upload: this folder (or only the .ipynb if your GitHub repo already contains colab_minimal/).
+
+Before running on Colab: push your fork so GIT_REPO includes colab_minimal/prepare_ag_zips.py
+(and setup_colab.py at repo root). The notebook clones that repo; it does not need a full local code zip.
+
+On Google Drive, place your two zips (any names; set paths in the notebook), e.g.:
+  MyDrive/AG_zips/annotations.zip
+  MyDrive/AG_zips/frames.zip
+
+Open colab_300_videos.ipynb in Colab, set GPU runtime, run all cells top to bottom.
+
+The notebook clones the STTran repo, runs setup_colab.py (GloVe + official weights via gdown),
+unzips your data to /content/ag_data, runs 300 videos, then export_graphs_json for machine-readable graphs.
+
+Outputs (same as local runs):
+  <STTran>/output/logs/first5_videos/<VIDEO>.mp4.log
+  <STTran>/output/first5_videos/<VIDEO>.mp4/  (PNGs, GIF, etc.)
+  graphs.json in each video folder after the export cell

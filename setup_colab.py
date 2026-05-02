@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""
+Colab one-shot setup: pip deps, compile CUDA/Cython extensions, GloVe, STTran + Faster R-CNN weights.
+
+Run from the STTran repo root:
+
+    python setup_colab.py
+
+Requires CUDA on the machine (Colab GPU runtime). Needs network for pip, GloVe, gdown.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+EXTRA_PIP = [
+    "gdown",
+    "pyyaml",
+    "opencv-python",
+    "pandas",
+    "dill",
+    "easydict",
+    "h5py",
+]
+
+GLOVE_URL_PRIMARY = "http://nlp.stanford.edu/data/glove.6B.zip"
+GLOVE_URL_MIRROR = "https://huggingface.co/stanfordnlp/glove/resolve/main/glove.6B.zip"
+GLOVE_MEMBER = "glove.6B.200d.txt"
+
+
+def _run(cmd: list[str], *, cwd: Path | None = None, env: dict | None = None) -> None:
+    print("+", " ".join(cmd), flush=True)
+    subprocess.run(cmd, cwd=cwd or REPO_ROOT, env=env or os.environ, check=True)
+
+
+def step_pip(upgrade_pip: bool) -> None:
+    if upgrade_pip:
+        _run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    _run([sys.executable, "-m", "pip", "install", "-r", str(REPO_ROOT / "requirements.txt")])
+    _run([sys.executable, "-m", "pip", "install", *EXTRA_PIP])
+
+
+def _rm_globs(root: Path, pattern: str) -> None:
+    for p in root.rglob(pattern):
+        if p.is_file():
+            p.unlink()
+
+
+def step_compile() -> None:
+    lib_model = REPO_ROOT / "fasterRCNN" / "lib" / "model"
+    _rm_globs(lib_model, "_C*.so")
+    _run([sys.executable, "setup.py", "build_ext", "--inplace"], cwd=REPO_ROOT / "fasterRCNN" / "lib")
+
+    for rel in ("lib/draw_rectangles", "lib/fpn/box_intersections_cpu"):
+        d = REPO_ROOT / rel
+        _rm_globs(d, "*.so")
+        _run([sys.executable, "setup.py", "build_ext", "--inplace"], cwd=d)
+
+
+def _download_file(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[download] {url} -> {dest}", flush=True)
+    urllib.request.urlretrieve(url, dest)
+
+
+def step_glove() -> None:
+    data_dir = REPO_ROOT / "data"
+    glove_200 = data_dir / GLOVE_MEMBER
+    if glove_200.is_file() and glove_200.stat().st_size > 0:
+        print(f"[skip] GloVe already at {glove_200}", flush=True)
+        return
+    data_dir.mkdir(parents=True, exist_ok=True)
+    zpath = data_dir / "glove.6B.zip"
+    if not zpath.is_file() or zpath.stat().st_size == 0:
+        try:
+            _download_file(GLOVE_URL_PRIMARY, zpath)
+        except Exception as e:
+            print(f"[warn] primary GloVe mirror failed ({e}); trying Hugging Face mirror", flush=True)
+            _download_file(GLOVE_URL_MIRROR, zpath)
+    _run(["unzip", "-o", "-q", str(zpath), GLOVE_MEMBER, "-d", str(data_dir)])
+    if not glove_200.is_file():
+        raise RuntimeError(f"GloVe extract failed: missing {glove_200}")
+
+
+def step_weights(cache_dir: Path, link_into_repo: bool) -> None:
+    cache_dir = cache_dir.resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    script = REPO_ROOT / "scripts" / "download_sttran_ag_weights.py"
+    cmd = [sys.executable, str(script), "--out_dir", str(cache_dir)]
+    if link_into_repo:
+        cmd.append("--link_into_repo")
+    _run(cmd)
+
+
+def step_verify() -> None:
+    root = str(REPO_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    import importlib
+
+    ok = True
+    for mod in (
+        "lib.draw_rectangles.draw_rectangles",
+        "lib.fpn.box_intersections_cpu.bbox",
+        "fasterRCNN.lib.model.roi_layers",
+    ):
+        try:
+            importlib.import_module(mod)
+            print(f"  OK  {mod}", flush=True)
+        except Exception as e:
+            ok = False
+            print(f"  FAIL  {mod}: {type(e).__name__}: {e}", flush=True)
+    if not ok:
+        raise RuntimeError("Sanity import failed; fix CUDA/extension build errors above.")
+
+
+def main() -> None:
+    os.chdir(REPO_ROOT)
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--skip-pip", action="store_true")
+    ap.add_argument("--skip-compile", action="store_true")
+    ap.add_argument("--skip-glove", action="store_true")
+    ap.add_argument("--skip-weights", action="store_true")
+    ap.add_argument("--no-upgrade-pip", action="store_true")
+    ap.add_argument("--weights-cache", type=Path, default=REPO_ROOT / ".sttran_weight_cache")
+    ap.add_argument("--no-link-weights", action="store_true")
+    args = ap.parse_args()
+
+    print("==============================================================")
+    print(f"STTran Colab setup  repo_root={REPO_ROOT}")
+    print("==============================================================")
+
+    if not args.skip_pip:
+        step_pip(upgrade_pip=not args.no_upgrade_pip)
+    if not args.skip_compile:
+        step_compile()
+    if not args.skip_glove:
+        step_glove()
+    if not args.skip_weights:
+        step_weights(args.weights_cache, link_into_repo=not args.no_link_weights)
+
+    print("==============================================================")
+    print("Sanity checks")
+    print("==============================================================")
+    if not args.skip_compile:
+        step_verify()
+
+    print("==============================================================")
+    print("Done. Set AG_DATA_PATH to Action Genome root, then:")
+    print("  python run_first5_videos_all_frames.py")
+    print("  bash colab_run_200_videos.sh")
+    print("==============================================================")
+
+
+if __name__ == "__main__":
+    main()
