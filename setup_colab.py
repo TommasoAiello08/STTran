@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-Colab one-shot setup: pip deps, compile CUDA/Cython extensions, GloVe, STTran + Faster R-CNN weights.
+Colab one-shot setup: pip deps, optional native extension build, GloVe, STTran + Faster R-CNN weights.
 
 Run from the STTran repo root:
 
     python setup_colab.py
     python setup_colab.py --colab   # recommended on Google Colab (keeps preinstalled torch)
 
-Requires GPU runtime for compiling / running Faster R-CNN CUDA extension. Needs network.
+Needs network.
+
+On stock Colab (PyTorch ≥ 2.x), the legacy CUDA extension ``fasterRCNN/lib/model/_C`` no longer builds
+(THC/Torch ABI removed). Inference in this fork uses TorchVision ROI/NMS fallbacks instead, so
+``--colab`` **skips native compile** unless you explicitly opt in (``--compile-native`` or env
+``STTRAN_COMPILE_NATIVE=1``).
 """
 
 from __future__ import annotations
@@ -44,6 +49,8 @@ COLAB_PIP_EXTRAS = [
     "six",
     "cython",
     "ninja",
+    "matplotlib",
+    "networkx",
 ] + EXTRA_PIP
 
 GLOVE_URL_PRIMARY = "http://nlp.stanford.edu/data/glove.6B.zip"
@@ -183,26 +190,54 @@ def step_weights(cache_dir: Path, link_into_repo: bool) -> None:
     _run(cmd)
 
 
-def step_verify() -> None:
+def step_verify(*, skip_native_extensions: bool) -> None:
     root = str(REPO_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
     import importlib
 
     ok = True
-    for mod in (
-        "lib.draw_rectangles.draw_rectangles",
-        "lib.fpn.box_intersections_cpu.bbox",
-        "fasterRCNN.lib.model.roi_layers",
-    ):
-        try:
-            importlib.import_module(mod)
-            print(f"  OK  {mod}", flush=True)
-        except Exception as e:
-            ok = False
-            print(f"  FAIL  {mod}: {type(e).__name__}: {e}", flush=True)
+    if skip_native_extensions:
+        for mod in (
+            "torch",
+            "torchvision",
+            "cv2",
+            "lib.object_detector",
+            "lib.sttran",
+            "fasterRCNN.lib.model.roi_layers",
+        ):
+            try:
+                importlib.import_module(mod)
+                print(f"  OK  {mod}", flush=True)
+            except Exception as e:
+                ok = False
+                print(f"  FAIL  {mod}: {type(e).__name__}: {e}", flush=True)
+        if ok:
+            import torch
+            from fasterRCNN.lib.model.roi_layers import nms
+
+            boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0], [0.1, 0.1, 2.0, 2.0]])
+            scores = torch.tensor([0.9, 0.8])
+            try:
+                keep = nms(boxes, scores, 0.5)
+                print(f"  OK  roi_layers.nms smoke test (keep={keep.tolist()})", flush=True)
+            except Exception as e:
+                ok = False
+                print(f"  FAIL  roi_layers.nms smoke test: {type(e).__name__}: {e}", flush=True)
+    else:
+        for mod in (
+            "lib.draw_rectangles.draw_rectangles",
+            "lib.fpn.box_intersections_cpu.bbox",
+            "fasterRCNN.lib.model.roi_layers",
+        ):
+            try:
+                importlib.import_module(mod)
+                print(f"  OK  {mod}", flush=True)
+            except Exception as e:
+                ok = False
+                print(f"  FAIL  {mod}: {type(e).__name__}: {e}", flush=True)
     if not ok:
-        raise RuntimeError("Sanity import failed; fix CUDA/extension build errors above.")
+        raise RuntimeError("Sanity import failed; see messages above.")
 
 
 def main() -> None:
@@ -213,6 +248,12 @@ def main() -> None:
         action="store_true",
         help="Colab mode: do not reinstall torch/torchvision from requirements.txt; install other deps only.",
     )
+    ap.add_argument(
+        "--compile-native",
+        action="store_true",
+        help="Build legacy CUDA/Cython extensions (fasterRCNN _C, draw_rectangles, bbox). "
+        "Usually fails on modern Colab PyTorch; default Colab path skips this.",
+    )
     ap.add_argument("--skip-pip", action="store_true")
     ap.add_argument("--skip-compile", action="store_true")
     ap.add_argument("--skip-glove", action="store_true")
@@ -222,6 +263,27 @@ def main() -> None:
     ap.add_argument("--weights-cache", type=Path, default=REPO_ROOT / ".sttran_weight_cache")
     ap.add_argument("--no-link-weights", action="store_true")
     args = ap.parse_args()
+    if args.compile_native and args.skip_compile:
+        ap.error("Choose at most one of --compile-native and --skip-compile")
+
+    env_force = os.environ.get("STTRAN_COMPILE_NATIVE", "").strip() in ("1", "true", "yes")
+    want_native = bool(args.compile_native or env_force)
+    if env_force and args.skip_compile:
+        print(
+            "[warn] STTRAN_COMPILE_NATIVE is set but --skip-compile was passed; honoring --skip-compile.",
+            flush=True,
+        )
+        want_native = False
+
+    if args.colab and not args.skip_compile and want_native:
+        pass  # compile requested
+    elif args.colab and not args.skip_compile and not want_native:
+        args.skip_compile = True
+        print(
+            "[colab] Skipping legacy native extension build "
+            "(use --compile-native or STTRAN_COMPILE_NATIVE=1 to force).",
+            flush=True,
+        )
 
     print("==============================================================")
     print(f"STTran Colab setup  repo_root={REPO_ROOT}")
@@ -240,8 +302,8 @@ def main() -> None:
     print("==============================================================")
     print("Sanity checks")
     print("==============================================================")
-    if not args.skip_compile and not args.skip_verify:
-        step_verify()
+    if not args.skip_verify:
+        step_verify(skip_native_extensions=args.skip_compile)
     elif args.skip_verify:
         print("  (skipped --skip-verify)")
 
@@ -259,9 +321,10 @@ if __name__ == "__main__":
         traceback.print_exc()
         print(
             "\n---\n"
-            "Hints: use GPU runtime; try: python setup_colab.py --colab\n"
-            "If verify fails but compile looked OK: python setup_colab.py --colab --skip-verify\n"
-            "(only for debugging — model may still fail at import time.)",
+            "Hints: GPU runtime recommended.\n"
+            "  Modern Colab: python setup_colab.py --colab  (skips legacy native compile; torchvision fallbacks)\n"
+            "  If you intentionally build _C on an old toolchain: python setup_colab.py --colab --compile-native\n"
+            "If verify fails: read the FAILED import lines above (often missing matplotlib/networkx).\n",
             file=sys.stderr,
         )
         sys.exit(1)

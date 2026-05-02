@@ -53,7 +53,8 @@ C) One-time Colab environment
       • Mount Drive.
       • git clone STTran.
       • python colab_minimal/prepare_ag_zips.py (or notebook import) → AG_ROOT.
-      • python setup_colab.py — GloVe + Faster R-CNN + STTran weights (gdown).
+      • python setup_colab.py --colab — pip extras + GloVe + weights via gdown (TorchVision
+        ROI/NMS fallbacks; legacy `_C` CUDA compile skipped on Colab unless forced).
       • export AG_DATA_PATH=AG_ROOT; set SPLIT, VIDEO_LIMIT, TOPK_*, MAX_RELS, etc.
       • python -u run_first5_videos_all_frames.py
       • python export_graphs_json.py
