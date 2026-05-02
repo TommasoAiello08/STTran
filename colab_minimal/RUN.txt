@@ -7,7 +7,18 @@ On Google Drive, place your two zips (any names; set paths in the notebook), e.g
   MyDrive/AG_zips/annotations.zip
   MyDrive/AG_zips/frames.zip
 
-Open colab_300_videos.ipynb in Colab, set GPU runtime, run all cells top to bottom.
+Open in Colab (fork is fine — same as any public repo):
+  https://colab.research.google.com/github/TommasoAiello08/STTran/blob/main/colab_minimal/colab_300_videos.ipynb
+
+If "Open from GitHub" search finds nothing: paste that URL in the browser, or use
+File → Upload notebook and upload your local colab_300_videos.ipynb (notebook still
+downloads code from GIT_REPO inside the cells).
+
+Colab not finding the repo is usually: wrong owner/repo name, private repo without
+GitHub auth in Colab, wrong branch (notebook is on main), or typo in path
+colab_minimal/colab_300_videos.ipynb — not because the repo is a fork.
+
+Then: Runtime → Change runtime type → GPU, run all cells top to bottom.
 
 The notebook clones the STTran repo, runs setup_colab.py (GloVe + official weights via gdown),
 unzips your data to /content/ag_data, runs 300 videos, then export_graphs_json for machine-readable graphs.
