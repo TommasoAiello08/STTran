@@ -1,0 +1,151 @@
+VIDVRD → STTran (predcls-style) pipeline (this repo)
+===================================================
+
+This file documents the concrete utilities added to connect a VIDVRD-style JSON
+(trajectory-based) to the exact `entry` dict format consumed by `lib/sttran.py`.
+
+High-level objective
+--------------------
+We want to train / run a relation predictor using:
+  - GT boxes + GT object labels (predcls-style)
+  - CNN/ROI visual features extracted from frames (Faster R-CNN backbone)
+  - general directed pairs (P→O, O→O, P→P, O→P)
+  - a VIDVRD predicate head (131 predicates; usually +1 background)
+
+Key constraints from current STTran implementation
+--------------------------------------------------
+In `lib/sttran.py`, relation features are constructed as:
+  - visual: 3×512 = 1536
+  - semantic: 2×200 = 400 (GloVe-init embeddings)
+  - total: 1936
+
+The transformer is instantiated with embed_dim=1936, so any new predicate head
+should take input dim 1936.
+
+Data contracts (what STTran consumes)
+------------------------------------
+STTran consumes an `entry` dict with (minimum) keys:
+
+  boxes:         FloatTensor [N,5]  rows = [frame_idx, x1,y1,x2,y2]
+  labels:        LongTensor  [N]    GT object class ids
+  pred_labels:   LongTensor  [N]    in predcls, identical to labels
+
+  pair_idx:      LongTensor  [R,2]  each row = (subj_node_id, obj_node_id)
+  im_idx:        FloatTensor [R]    frame index for each pair (0..T-1)
+
+  features:      FloatTensor [N,2048]      ROI features per node
+  union_feat:    FloatTensor [R,1024,7,7]  union ROIAlign per pair
+  spatial_masks: FloatTensor [R,2,27,27]   rasterized pair boxes
+
+Utilities added (files and responsibilities)
+--------------------------------------------
+
+1) vidvrd_predcls_input.py
+--------------------------
+Purpose: VIDVRD JSON → node/pair tensors + predicate targets.
+
+Key functions:
+  - parse_vidvrd_json_dict(vidvrd_json)
+      Parses the sample schema:
+        subject/objects (tid→category)
+        trajectories[f] (list of {tid,bbox,generated})
+        relation_instances (subject_tid, object_tid, predicate, begin_fid, end_fid)
+
+  - build_sttran_nodes_from_vidvrd_frames(...)
+      Produces:
+        boxes  [N,5]
+        labels [N]
+        frame_offsets[f] (global node offset for each frame)
+        tid_to_local_idx[f][tid] for fast relation resolution
+
+  - build_vidvrd_pairs_from_relation_spans(...)
+      Expands relation spans into per-frame positive pairs:
+        (frame_idx, subj_global, obj_global, pred_id)
+      Skips frames where a subject/object tid has no box.
+
+  - add_sampled_negatives(...)
+      Adds negatives per frame by sampling from all directed pairs not in the
+      positive set, producing:
+        pair_idx [R,2], im_idx [R], pred_target [R]
+      Convention: pred_target=0 is background/no_relation.
+
+  - build_vidvrd_predcls_entry(...)
+      Convenience end-to-end helper:
+        VIDVRD JSON + tensors + featurizer → (entry, pred_target, skipped)
+
+2) vidvrd_predcls_featurizer.py
+-------------------------------
+Purpose: compute the visual tensors STTran needs from frames + boxes + pairs.
+
+Class:
+  - VidvrdPredclsFeaturizer(fasterRCNN, chunk_frames=10)
+      Reuses the Faster R-CNN model (resnet101) already loaded by
+      `lib/object_detector.detector`.
+
+Forward:
+  - inputs:
+      im_data [T,3,H,W]
+      im_info [T,3] or [1,3]  (scale is im_info[0,2])
+      boxes [N,5]
+      pair_idx [R,2]
+      im_idx [R]
+  - outputs:
+      features [N,2048]
+      union_feat [R,1024,7,7]
+      spatial_masks [R,2,27,27]
+
+This matches the predcls logic in `lib/object_detector.py`:
+  - boxes are scaled by im_info[0,2] before ROIAlign
+  - union_boxes use im_idx as ROIAlign batch index
+  - spatial masks are rasterized in unscaled coordinate space (as in repo)
+
+3) lib/sttran.py (small refactor)
+---------------------------------
+Change: STTran.forward now accepts:
+  forward(entry, return_global_output: bool = False)
+
+If return_global_output=True, returns:
+  (entry, global_output)
+where global_output is the transformer output representation used by heads.
+
+This enables additional heads (VIDVRD) without duplicating the trunk.
+
+4) sttran_multitask_heads.py
+----------------------------
+Purpose: add a VIDVRD predicate head while keeping AG heads intact.
+
+Class:
+  - STTranMultiHead(sttran, num_vidvrd_predicates)
+      Contains:
+        vidvrd_head: Linear(1936, num_vidvrd_predicates)
+
+Forward:
+  - head="ag": behaves like stock STTran (fills attention/spatial/contact keys)
+  - head="vidvrd": calls sttran(..., return_global_output=True) and then:
+        vidvrd_logits = vidvrd_head(global_output)
+
+End-to-end demo
+---------------
+File: run_vidvrd_json_demo.py
+
+What it demonstrates:
+  - parse JSON
+  - build boxes/labels/pairs/targets
+  - compute features via Faster R-CNN backbone
+  - run STTranMultiHead with head="vidvrd" to get logits
+
+It supports a `--dummy_frames` mode (random frames) to validate plumbing without
+downloading VIDVRD frames.
+
+What you still need for real training
+-------------------------------------
+  - Provide the real VIDVRD vocab lists:
+      34 object categories
+      131 predicates (plus background)
+  - Load real frames and build im_data + im_info with correct preprocessing:
+      resize/normalize consistent with Faster R-CNN checkpoint
+      set im_info[0,2] to the resize scale
+  - Training loop:
+      loss = CrossEntropy(vidvrd_logits, pred_target)
+      freeze Faster R-CNN; fine-tune STTran trunk + vidvrd_head (+ embeddings)
+

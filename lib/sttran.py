@@ -361,7 +361,7 @@ class STTran(nn.Module):
         self.s_rel_compress = nn.Linear(1936, self.spatial_class_num)
         self.c_rel_compress = nn.Linear(1936, self.contact_class_num)
 
-    def forward(self, entry):
+    def forward(self, entry, *, return_global_output: bool = False):
 
         entry = self.object_classifier(entry)
 
@@ -383,7 +383,9 @@ class STTran(nn.Module):
 
         rel_features = torch.cat((x_visual, x_semantic), dim=1)
         # Spatial-Temporal Transformer
-        global_output, global_attention_weights, local_attention_weights = self.glocal_transformer(features=rel_features, im_idx=entry['im_idx'])
+        global_output, global_attention_weights, local_attention_weights = self.glocal_transformer(
+            features=rel_features, im_idx=entry['im_idx']
+        )
 
         entry["attention_distribution"] = self.a_rel_compress(global_output)
         entry["spatial_distribution"] = self.s_rel_compress(global_output)
@@ -392,5 +394,7 @@ class STTran(nn.Module):
         entry["spatial_distribution"] = torch.sigmoid(entry["spatial_distribution"])
         entry["contacting_distribution"] = torch.sigmoid(entry["contacting_distribution"])
 
+        if return_global_output:
+            return entry, global_output
         return entry
 
