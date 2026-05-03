@@ -180,7 +180,8 @@ def main() -> None:
 
             with torch.inference_mode():
                 entry = det(im_data, im_info, gt_boxes, num_boxes, gt_annotation_video, im_all=None)
-                pred = model(entry)
+                # Explicit head selection: keep ActionGenome heads for this script.
+                pred = model(entry, head="ag")
 
             boxes = pred["boxes"].detach().cpu().numpy()
             if "pred_labels" in pred:

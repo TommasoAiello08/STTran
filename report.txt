@@ -304,6 +304,17 @@ presentation snippets parallel to this English technical tree.
 The following items were implemented or clarified in a focused development pass
 and are reflected in the current tree.
 
+Explicit head selection (AG vs VIDVRD). STTran was extended to support an
+additional predicate label space (VIDVRD) while preserving ActionGenome tooling.
+To prevent silent mix-ups between label spaces, the STTran forward call now
+requires an explicit head argument: head="ag" computes and returns the original
+three ActionGenome distributions (attention/spatial/contact), while head="vidvrd"
+skips those heads and only produces the shared transformer representation when
+return_global_output=True. A small wrapper STTranMultiHead attaches a VIDVRD
+predicate classifier to that shared 1936-d representation. All call sites in
+scripts that rely on ActionGenome outputs were updated to pass head="ag"
+explicitly.
+
 SGDet behaviour and observability. Scene graph detection mode is much heavier
 than predicate classification because each step runs the full Faster R-CNN
 stack. Earlier runs looked "stuck" because a single batched forward over all

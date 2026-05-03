@@ -87,7 +87,8 @@ def main():
 
     with torch.no_grad():
         entry = det(im_data, im_info, gt_boxes, num_boxes, gt_annotation_video, im_all=None)
-        pred = model(entry)
+        # Explicit head selection: keep ActionGenome heads for this script.
+        pred = model(entry, head="ag")
 
     boxes = pred["boxes"].detach().cpu().numpy()  # (N,5) [im, x1,y1,x2,y2]
     labels = pred["labels"].detach().cpu().numpy()  # (N,)

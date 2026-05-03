@@ -361,7 +361,11 @@ class STTran(nn.Module):
         self.s_rel_compress = nn.Linear(1936, self.spatial_class_num)
         self.c_rel_compress = nn.Linear(1936, self.contact_class_num)
 
-    def forward(self, entry, return_global_output: bool = False):
+    # `head` is required on purpose: we want call sites to be explicit about
+    # whether they're running the ActionGenome heads ("ag") or using STTran as a
+    # shared trunk for an external head ("vidvrd"). This avoids silent defaults
+    # that could mix datasets / label spaces.
+    def forward(self, entry, *, head: str, return_global_output: bool = False):
 
         entry = self.object_classifier(entry)
 
@@ -387,12 +391,19 @@ class STTran(nn.Module):
             features=rel_features, im_idx=entry['im_idx']
         )
 
-        entry["attention_distribution"] = self.a_rel_compress(global_output)
-        entry["spatial_distribution"] = self.s_rel_compress(global_output)
-        entry["contacting_distribution"] = self.c_rel_compress(global_output)
+        if head == "ag":
+            entry["attention_distribution"] = self.a_rel_compress(global_output)
+            entry["spatial_distribution"] = self.s_rel_compress(global_output)
+            entry["contacting_distribution"] = self.c_rel_compress(global_output)
 
-        entry["spatial_distribution"] = torch.sigmoid(entry["spatial_distribution"])
-        entry["contacting_distribution"] = torch.sigmoid(entry["contacting_distribution"])
+            entry["spatial_distribution"] = torch.sigmoid(entry["spatial_distribution"])
+            entry["contacting_distribution"] = torch.sigmoid(entry["contacting_distribution"])
+        elif head == "vidvrd":
+            # VIDVRD uses an external predicate head; we only need the trunk output.
+            # (Keep global_output available via return_global_output=True.)
+            pass
+        else:
+            raise ValueError(f"Unknown head={head!r}. Expected 'ag' or 'vidvrd'.")
 
         if return_global_output:
             return entry, global_output

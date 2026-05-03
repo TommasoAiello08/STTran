@@ -359,7 +359,8 @@ def main():
                     gtann1 = [gt_annotation_video[fi]]
                     with torch.inference_mode():
                         entry = det(im1, info1, gtb1, nb1, gtann1, im_all=None)
-                        pred = model(entry)
+                        # Explicit head selection: keep ActionGenome heads for this script.
+                        pred = model(entry, head="ag")
 
                     boxes = pred["boxes"].detach().cpu().numpy()
                     if "pred_labels" in pred:
@@ -408,7 +409,8 @@ def main():
 
                 with torch.inference_mode():
                     entry = det(im_data, im_info, gt_boxes, num_boxes, gt_annotation_video, im_all=None)
-                    pred = model(entry)
+                    # Explicit head selection: keep ActionGenome heads for this script.
+                    pred = model(entry, head="ag")
 
                 if sttran_mode == "sgdet":
                     print(

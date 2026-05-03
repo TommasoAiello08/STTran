@@ -108,6 +108,7 @@ def main() -> None:
     )
 
     with torch.inference_mode():
+        # Head is required: be explicit about label space.
         out = multi(entry, head="vidvrd")
 
     print("entry keys:", sorted(entry.keys()))

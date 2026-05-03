@@ -52,7 +52,9 @@ class STTranMultiHead(nn.Module):
         # Input dim must match transformer embed_dim=1936 in this repo.
         self.vidvrd_head = nn.Linear(1936, self.num_vidvrd_predicates)
 
-    def forward(self, entry: dict, *, head: Literal["ag", "vidvrd"] = "ag") -> MultiHeadOutput:
+    # `head` is required: forcing call sites to specify which label space is used
+    # prevents accidental training/eval with the wrong predicate set.
+    def forward(self, entry: dict, *, head: Literal["ag", "vidvrd"]) -> MultiHeadOutput:
         """
         Args:
           entry: dict containing boxes/labels/pair_idx/im_idx/features/union_feat/spatial_masks (see ROADMAP).
@@ -64,10 +66,10 @@ class STTranMultiHead(nn.Module):
           MultiHeadOutput(entry=..., vidvrd_logits=...)
         """
         if head == "ag":
-            out = self.sttran(entry)
+            out = self.sttran(entry, head="ag")
             return MultiHeadOutput(entry=out, vidvrd_logits=None)
 
-        out, global_output = self.sttran(entry, return_global_output=True)
+        out, global_output = self.sttran(entry, head="vidvrd", return_global_output=True)
         logits = self.vidvrd_head(global_output)
         return MultiHeadOutput(entry=out, vidvrd_logits=logits)
 
