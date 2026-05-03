@@ -21,7 +21,10 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+from pathlib import Path
 from typing import Dict
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 FILE_IDS: Dict[str, str] = {
@@ -94,15 +97,18 @@ def main() -> None:
         print(f"  - {k:10s} {p}")
 
     if args.link_into_repo:
-        # Copy into expected locations.
-        os.makedirs("fasterRCNN/models", exist_ok=True)
-        shutil.copy2(paths["detector"], "fasterRCNN/models/faster_rcnn_ag.pth")
-        os.makedirs("dataloader", exist_ok=True)
-        shutil.copy2(paths["filtersmall"], "dataloader/object_bbox_and_relationship_filtersmall.pkl")
-        os.makedirs("ckpts", exist_ok=True)
-        shutil.copy2(paths["predcls"], "ckpts/sttran_predcls.tar")
-        shutil.copy2(paths["sgcls"], "ckpts/sttran_sgcls.tar")
-        shutil.copy2(paths["sgdet"], "ckpts/sttran_sgdet.tar")
+        # Copy into expected locations under the STTran repo root (not cwd).
+        models_dir = REPO_ROOT / "fasterRCNN" / "models"
+        dl_dir = REPO_ROOT / "dataloader"
+        ck_dir = REPO_ROOT / "ckpts"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        dl_dir.mkdir(parents=True, exist_ok=True)
+        ck_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(paths["detector"], models_dir / "faster_rcnn_ag.pth")
+        shutil.copy2(paths["filtersmall"], dl_dir / "object_bbox_and_relationship_filtersmall.pkl")
+        shutil.copy2(paths["predcls"], ck_dir / "sttran_predcls.tar")
+        shutil.copy2(paths["sgcls"], ck_dir / "sttran_sgcls.tar")
+        shutil.copy2(paths["sgdet"], ck_dir / "sttran_sgdet.tar")
         print("\nCopied into repo:")
         print("  - fasterRCNN/models/faster_rcnn_ag.pth")
         print("  - dataloader/object_bbox_and_relationship_filtersmall.pkl")

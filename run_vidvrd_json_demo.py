@@ -5,6 +5,10 @@ This does NOT require downloading VIDVRD. It expects:
   - a single VIDVRD-style JSON file (as per your sample schema)
   - a way to load the corresponding frames into a tensor (or it can generate dummy frames)
 
+Action Genome root (``AG_DATA_PATH``) is **not** required: class lists come from
+``data/ag_bootstrap/`` in the repo. You still need ``fasterRCNN/models/faster_rcnn_ag.pth``
+(see ``REQUIRED_ARTIFACTS.txt``).
+
 It will:
   1) parse JSON into nodes + relation pairs
   2) compute ROI features using the frozen Faster R-CNN backbone
@@ -19,12 +23,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-from pathlib import Path
-from typing import List
 
 import torch
 
+from lib.ag_bootstrap import load_ag_label_bundle
 from lib.object_detector import detector
 from lib.sttran import STTran
 from sttran_multitask_heads import STTranMultiHead
@@ -57,27 +59,25 @@ def main() -> None:
     obj2id, pred2id = build_vidvrd_vocab_maps(object_categories=obj_names, predicate_names=pred_names, reserve_background_id0=True)
 
     # Create the frozen detector (loads Faster R-CNN weights) to reuse its fasterRCNN module.
-    # We pass AG object_classes only because the detector constructor expects it; for predcls featurization
-    # we only need the backbone + ROIAlign + head-to-tail, not the class logits.
-    from dataloader.action_genome import AG
+    # Object / predicate lists for the AG-trained checkpoint are vendored under data/ag_bootstrap/.
+    (
+        object_classes,
+        _relationship_classes,
+        attention_relationships,
+        spatial_relationships,
+        contacting_relationships,
+    ) = load_ag_label_bundle()
 
-    # Minimal hack: load AG once to get the object class list used by the pretrained detector.
-    # You can replace this with a hardcoded list if you don't want dataset access.
-    ag_root = os.environ.get("AG_DATA_PATH")
-    if not ag_root:
-        raise SystemExit("Set AG_DATA_PATH to your ActionGenome root so we can initialize the Faster R-CNN backbone.")
-    ds = AG(mode="test", datasize="large", data_path=ag_root, filter_nonperson_box_frame=True, filter_small_box=False)
-
-    det = detector(train=False, object_classes=ds.object_classes, use_SUPPLY=True, mode="predcls").to(device)
+    det = detector(train=False, object_classes=object_classes, use_SUPPLY=True, mode="predcls").to(device)
     det.eval()
 
     # STTran instantiation for demo: use AG counts just so the module initializes.
     sttran = STTran(
         mode="predcls",
-        attention_class_num=len(ds.attention_relationships),
-        spatial_class_num=len(ds.spatial_relationships),
-        contact_class_num=len(ds.contacting_relationships),
-        obj_classes=ds.object_classes,
+        attention_class_num=len(attention_relationships),
+        spatial_class_num=len(spatial_relationships),
+        contact_class_num=len(contacting_relationships),
+        obj_classes=object_classes,
         enc_layer_num=1,
         dec_layer_num=3,
     ).to(device)

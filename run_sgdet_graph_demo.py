@@ -39,6 +39,7 @@ import torch
 
 from dataloader.action_genome import AG
 from lib.object_detector import detector
+from lib.repo_paths import resolve_repo_path
 from lib.sttran import STTran
 from run_first5_videos_all_frames import (
     _edge_prefix,
@@ -62,7 +63,9 @@ def main() -> None:
     if not data_path:
         raise SystemExit("Set AG_DATA_PATH to your Action Genome root (e.g. .../dataset/ag)")
 
-    ckpt_path = os.environ.get("STTRAN_CKPT", "ckpts/sttran_sgdet.tar")
+    ckpt_path = resolve_repo_path(
+        os.environ.get("STTRAN_CKPT", "ckpts/sttran_sgdet.tar")
+    )
     max_rels = int(os.environ.get("MAX_RELS", "20"))
     split = os.environ.get("SPLIT", "test").strip().lower()
     if split not in ("train", "test"):
@@ -72,8 +75,12 @@ def main() -> None:
     video_skip = int(os.environ.get("VIDEO_SKIP", "120"))
     video_limit = int(os.environ.get("VIDEO_LIMIT", "1"))
 
-    out_viz_root = os.path.abspath(os.environ.get("SGDET_OUT_VIZ", os.path.join("output", "sgdet_graph_demo")))
-    out_logs_root = os.path.abspath(os.environ.get("SGDET_OUT_LOGS", os.path.join("output", "logs", "sgdet_graph_demo")))
+    out_viz_root = resolve_repo_path(
+        os.environ.get("SGDET_OUT_VIZ", "output/sgdet_graph_demo")
+    )
+    out_logs_root = resolve_repo_path(
+        os.environ.get("SGDET_OUT_LOGS", "output/logs/sgdet_graph_demo")
+    )
     ensure_dirs(out_logs_root, out_viz_root)
 
     device = pick_device()

@@ -139,13 +139,18 @@ downloading VIDVRD frames.
 
 What you still need for real training
 -------------------------------------
-  - Provide the real VIDVRD vocab lists:
-      34 object categories
-      131 predicates (plus background)
-  - Load real frames and build im_data + im_info with correct preprocessing:
-      resize/normalize consistent with Faster R-CNN checkpoint
-      set im_info[0,2] to the resize scale
-  - Training loop:
-      loss = CrossEntropy(vidvrd_logits, pred_target)
-      freeze Faster R-CNN; fine-tune STTran trunk + vidvrd_head (+ embeddings)
+See **REQUIRED_ARTIFACTS.txt** (section D) for a checklist. In short:
+
+  - **Detector**: ``fasterRCNN/models/faster_rcnn_ag.pth`` (repo-internal path; in gitignore).
+  - **GloVe** under ``data/`` for STTran semantic inputs.
+  - **Optional AG init**: ``ckpts/sttran_predcls.tar`` (or similar) to warm-start the trunk;
+    there is no dedicated VIDVRD training script in this repo yet — you add the loop.
+  - **VIDVRD data**: frames + annotations; **fixed** vocab (e.g. 34 objects, 131 predicates
+    + background), not ad-hoc ``sorted()`` over one JSON file.
+  - **Training loop** (to implement): load real frames; build ``im_data`` / ``im_info``
+    consistent with the Faster R-CNN preprocessing; ``loss = CE(vidvrd_logits, pred_target)``;
+    typically freeze Faster R-CNN and fine-tune STTran trunk + ``vidvrd_head``.
+
+``run_vidvrd_json_demo.py`` no longer needs ``AG_DATA_PATH``: AG label lists are vendored
+under ``data/ag_bootstrap/``. Full Action Genome dataloaders still require ``AG_DATA_PATH``.
 

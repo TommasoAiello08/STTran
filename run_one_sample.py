@@ -7,6 +7,7 @@ import torch
 
 from dataloader.action_genome import AG, cuda_collate_fn
 from lib.object_detector import detector
+from lib.repo_paths import resolve_repo_path
 from lib.sttran import STTran
 
 
@@ -32,7 +33,9 @@ def main():
     if not data_path:
         raise SystemExit("Set AG_DATA_PATH to your ActionGenome root (e.g. /.../dataset/ag)")
 
-    ckpt_path = os.environ.get("STTRAN_CKPT", "ckpts/sttran_predcls.tar")
+    ckpt_path = resolve_repo_path(
+        os.environ.get("STTRAN_CKPT", "ckpts/sttran_predcls.tar")
+    )
 
     device = pick_device()
     print(f"device: {device}")

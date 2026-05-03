@@ -1,0 +1,100 @@
+Artifacts and data paths (clone-friendly layout)
+=================================================
+
+All paths below are relative to the **STTran repository root** unless noted.
+Code resolves them via ``lib.repo_paths`` (not the shell cwd). Large binaries are
+gitignored: obtain them with ``python scripts/download_sttran_ag_weights.py`` or
+copy from a teammate / Drive.
+
+--------------------------------------------------------------------
+A) Shipped in git (no download)
+--------------------------------------------------------------------
+  - Source under ``lib/``, ``dataloader/``, ``fasterRCNN/``, configs, etc.
+  - ``data/ag_bootstrap/{object_classes,relationship_classes}.txt``
+      Action Genome *label names only* (for detector/STTran init without AG_DATA_PATH).
+  - ``requirements.txt`` (Python dependencies).
+
+--------------------------------------------------------------------
+B) External directory: Action Genome (full AG pipeline only)
+--------------------------------------------------------------------
+Set **AG_DATA_PATH** to the root of Action Genome (often ``.../dataset/ag``). That
+tree must include at least:
+
+  - annotations/object_classes.txt, relationship_classes.txt (same content as
+    ag_bootstrap; the loader still reads from AG for compatibility)
+  - annotations/person_bbox.pkl
+  - annotations/object_bbox_and_relationship.pkl   (predcls)
+  - annotations/frame_list.txt
+  - frames/<video_id>/<frame>.png
+
+For **sgcls** / **sgdet** / APT with ``mode != predcls`` you also need the
+filter-small pickle **inside the repo** (not under AG):
+
+  - ``dataloader/object_bbox_and_relationship_filtersmall.pkl``
+
+--------------------------------------------------------------------
+C) Inside repo but not in git (download or copy)
+--------------------------------------------------------------------
+  1) **Faster R-CNN (Action Genome)** — required for any run that builds the
+     detector or ROI features (AG scripts, VIDVRD featurizer, demos):
+
+        fasterRCNN/models/faster_rcnn_ag.pth   (~363 MB)
+
+     Override: env **FASTER_RCNN_AG_PTH** (absolute path).
+
+  2) **STTran AG checkpoints** — for pretrained relation heads on Action Genome:
+
+        ckpts/sttran_predcls.tar
+        ckpts/sttran_sgcls.tar
+        ckpts/sttran_sgdet.tar
+
+     Override: env **STTRAN_CKPT** (absolute path, or repo-relative).
+
+  3) **GloVe 6B 200d** — loaded into ``data/`` on first use (STTran embeddings):
+
+        data/glove.6B.200d.txt   (+ optional cached .pt)
+
+     ``setup_colab.py`` / upstream STTran docs describe fetching GloVe.
+
+  4) **Optional** — ``dataloader/object_bbox_and_relationship.pkl`` may exist
+     locally for tooling; **predcls** loads annotations from AG_DATA_PATH, not
+     this file.
+
+--------------------------------------------------------------------
+D) VIDVRD: what exists in this repo vs what you need to train
+--------------------------------------------------------------------
+**In repo (code):**
+  - ``vidvrd_predcls_input.py``, ``vidvrd_predcls_featurizer.py``,
+    ``sttran_multitask_heads.py``, ``run_vidvrd_json_demo.py``
+  - ``lib/sttran.py`` supports ``head="vidvrd"`` (trunk features for a predicate head).
+
+**In repo (demo, no AG_DATA_PATH):**
+  - ``run_vidvrd_json_demo.py --dummy_frames`` needs only (C1) detector weights
+    and GloVe (C3); class lists come from ``data/ag_bootstrap/``.
+
+**Not in repo yet (you must add for real VIDVRD training):**
+  - **VIDVRD dataset**: videos or extracted frames + official annotations (JSON
+    or converted to your schema).
+  - **Fixed label spaces**: e.g. 34 object categories and 131 predicates (+ background),
+    as stable index maps (do not rely on ``sorted(unique from one JSON)`` for training).
+  - **Training script / loop**: cross-entropy (or your loss) on ``vidvrd_head`` logits;
+    optimizer; train/val split; logging. The current demo only runs a forward pass.
+  - **Initialization (recommended)**: load **sttran_predcls.tar** (or another AG ckpt)
+    into the STTran trunk and **freeze** Faster R-CNN; train mostly ``vidvrd_head``
+    (+ optionally trunk). Same files as (C2) + (C1).
+
+**Environment summary for VIDVRD-style training (when you implement it):**
+  - AG_DATA_PATH: **not** required if you only use ag_bootstrap + VIDVRD frames.
+  - FASTER_RCNN_AG_PTH: optional if default repo path is populated.
+  - STTRAN_CKPT or custom code to load partial state_dict for trunk.
+  - GloVe under ``data/`` as in (C3).
+
+--------------------------------------------------------------------
+E) Optional overrides (all paths)
+--------------------------------------------------------------------
+  AG_DATA_PATH              Action Genome root (full AG dataloader)
+  FASTER_RCNN_AG_PTH        Detector checkpoint file
+  AG_FILTER_SMALL_PKL       Filter-small pickle path
+  STTRAN_CKPT               STTran .tar checkpoint
+  OUT_VIZ_ROOT / OUT_LOGS_ROOT / SGDET_OUT_VIZ / SGDET_OUT_LOGS
+                            Repo-relative or absolute output roots

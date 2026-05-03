@@ -27,8 +27,8 @@ Env vars:
   VIZ_LAYOUT: 'circular' (fast) or 'spring' (slow, nicer)
   VIZ_REUSE_LAYOUT: '1' to reuse node positions across frames (faster)
   FRAME_OFFSET / FRAME_LIMIT: optional ints to process only a subset of frames per video
-  STTRAN_MODE: predcls | sgcls | sgdet (default predcls). Default checkpoint switches to
-               ``sttran_sgdet.tar`` when mode is sgdet unless STTRAN_CKPT is set.
+  STTRAN_MODE: predcls | sgcls | sgdet (default predcls). Default checkpoint is
+               ``sttran_predcls.tar`` / ``sttran_sgcls.tar`` / ``sttran_sgdet.tar`` unless STTRAN_CKPT is set.
                Note: sgdet runs the full Faster R-CNN RPN; on Apple MPS a non-contiguous tensor
                bug in the upstream RPN was fixed (``rpn.py`` uses ``reshape`` instead of ``view``).
                SGDet is **much slower** than predcls (minutes per short clip on MPS). By default
@@ -52,6 +52,7 @@ import torch
 
 from dataloader.action_genome import AG
 from lib.object_detector import detector
+from lib.repo_paths import resolve_repo_path
 from lib.sttran import STTran
 from viz_terminal_scene_graphs import (
     parse_terminal_log,
@@ -194,8 +195,13 @@ def main():
     if sttran_mode not in ("predcls", "sgcls", "sgdet"):
         raise SystemExit("STTRAN_MODE must be one of: predcls, sgcls, sgdet")
 
-    default_ckpt = "ckpts/sttran_sgdet.tar" if sttran_mode == "sgdet" else "ckpts/sttran_predcls.tar"
-    ckpt_path = os.environ.get("STTRAN_CKPT", default_ckpt)
+    if sttran_mode == "sgdet":
+        default_ckpt = "ckpts/sttran_sgdet.tar"
+    elif sttran_mode == "sgcls":
+        default_ckpt = "ckpts/sttran_sgcls.tar"
+    else:
+        default_ckpt = "ckpts/sttran_predcls.tar"
+    ckpt_path = resolve_repo_path(os.environ.get("STTRAN_CKPT", default_ckpt))
     max_rels = int(os.environ.get("MAX_RELS", "20"))
     split = os.environ.get("SPLIT", "test").strip().lower()
     if split not in ("train", "test"):
@@ -284,11 +290,11 @@ def main():
         # surface progress sooner without exploding the number of forwards too much.
         os.environ.setdefault("SGDET_RCNN_CHUNK", "4")
 
-    out_logs_root = os.path.abspath(
-        os.environ.get("OUT_LOGS_ROOT", os.path.join(os.getcwd(), "output", "logs", "first5_videos"))
+    out_logs_root = resolve_repo_path(
+        os.environ.get("OUT_LOGS_ROOT", "output/logs/first5_videos")
     )
-    out_viz_root = os.path.abspath(
-        os.environ.get("OUT_VIZ_ROOT", os.path.join(os.getcwd(), "output", "first5_videos"))
+    out_viz_root = resolve_repo_path(
+        os.environ.get("OUT_VIZ_ROOT", "output/first5_videos")
     )
     ensure_dirs(out_logs_root, out_viz_root)
     viz_layout = os.environ.get("VIZ_LAYOUT", "circular").strip().lower()

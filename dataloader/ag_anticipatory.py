@@ -34,6 +34,7 @@ except ImportError:  # pragma: no cover
     from imageio import imread      # type: ignore
 
 from fasterRCNN.lib.model.utils.blob import prep_im_for_blob, im_list_to_blob
+from lib.repo_paths import resolve_repo_path
 
 
 # ----------------------------------------------------------------------------
@@ -157,7 +158,10 @@ class AGAnticipatory(Dataset):
         with open(os.path.join(data_path, 'annotations/person_bbox.pkl'), 'rb') as f:
             person_bbox = pickle.load(f)
         if filter_small_box:
-            with open('dataloader/object_bbox_and_relationship_filtersmall.pkl', 'rb') as f:
+            fs_path = os.environ.get("AG_FILTER_SMALL_PKL") or resolve_repo_path(
+                os.path.join("dataloader", "object_bbox_and_relationship_filtersmall.pkl")
+            )
+            with open(fs_path, 'rb') as f:
                 object_bbox = pickle.load(f)
         else:
             with open(os.path.join(data_path,

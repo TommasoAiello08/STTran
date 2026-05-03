@@ -7,6 +7,7 @@ import cv2
 import os
 
 from lib.funcs import assign_relations
+from lib.repo_paths import resolve_repo_path
 import numpy as _np
 
 # NOTE: we intentionally avoid importing the optional Cython extension here.
@@ -68,7 +69,10 @@ class detector(nn.Module):
 
         self.fasterRCNN = resnet(classes=self.object_classes, num_layers=101, pretrained=False, class_agnostic=False)
         self.fasterRCNN.create_architecture()
-        checkpoint = torch.load('fasterRCNN/models/faster_rcnn_ag.pth', map_location='cpu')
+        det_path = os.environ.get("FASTER_RCNN_AG_PTH") or resolve_repo_path(
+            os.path.join("fasterRCNN", "models", "faster_rcnn_ag.pth")
+        )
+        checkpoint = torch.load(det_path, map_location="cpu")
         self.fasterRCNN.load_state_dict(checkpoint['model'])
 
         self.ROI_Align = copy.deepcopy(self.fasterRCNN.RCNN_roi_align)

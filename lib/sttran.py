@@ -2,11 +2,11 @@
 Let's get the relationships yo
 """
 
-import os
 import numpy as np
 import torch
 import torch.nn as nn
 
+from lib.repo_paths import repo_data_dir
 from lib.word_vectors import obj_edge_vectors
 from lib.transformer import transformer
 from lib.fpn.box_utils import center_size
@@ -71,7 +71,9 @@ class ObjectClassifier(nn.Module):
         #roi align
         self.RCNN_roi_align = ROIAlign((7, 7), 1.0/16.0, 0)
 
-        embed_vecs = obj_edge_vectors(obj_classes[1:], wv_type='glove.6B', wv_dir='data', wv_dim=200)
+        embed_vecs = obj_edge_vectors(
+            obj_classes[1:], wv_type="glove.6B", wv_dir=repo_data_dir(), wv_dim=200
+        )
         self.obj_embed = nn.Embedding(len(obj_classes)-1, 200)
         self.obj_embed.weight.data = embed_vecs.clone()
 
@@ -345,9 +347,10 @@ class STTran(nn.Module):
         self.obj_fc = nn.Linear(2048, 512)
         self.vr_fc = nn.Linear(256*7*7, 512)
 
-        # Store / reuse word vectors under this repo's local `data/` directory.
-        _repo_data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
-        embed_vecs = obj_edge_vectors(obj_classes, wv_type='glove.6B', wv_dir=_repo_data_dir, wv_dim=200)
+        # Store / reuse word vectors under this repo's local ``data/`` directory.
+        embed_vecs = obj_edge_vectors(
+            obj_classes, wv_type="glove.6B", wv_dir=repo_data_dir(), wv_dim=200
+        )
         self.obj_embed = nn.Embedding(len(obj_classes), 200)
         self.obj_embed.weight.data = embed_vecs.clone()
 
