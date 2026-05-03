@@ -37,12 +37,15 @@ annotations, frames, and video metadata. The Faster R-CNN checkpoint used by
 STTran is not shipped; GloVe embeddings can be auto-downloaded into data/.
 
 The coursework-oriented runs described here focus on batches of videos (not
-only "five" in name: limits are controlled by environment variables) under
-predcls-style inference: the model predicts object classes and relation
-predicates with confidence scores. Each frame yields a graph: nodes are
-detected entities with class labels and optional boxes; edges belong to three
-semantic groups (attention, spatial, contact) with string predicates and
-softmax-like scores in [0, 1].
+only "five" in name: limits are controlled by environment variables). The
+default mode in run_first5_videos_all_frames.py remains predcls: the model uses
+ground-truth boxes and predicts relation predicates with confidence scores.
+The same driver also supports sgcls and sgdet (STTRAN_MODE): sgdet runs the
+full Faster R-CNN detector plus STTran, which is orders of magnitude slower on
+CPU or Apple MPS than predcls. Each frame yields a graph: nodes are entities
+with class labels and optional boxes; edges belong to three semantic groups
+(attention, spatial, contact) with string predicates and softmax-like scores in
+[0, 1].
 
 
 --------------------------------------------------------------------------------
@@ -52,7 +55,20 @@ softmax-like scores in [0, 1].
 The driver script run_first5_videos_all_frames.py (despite the historical name)
 selects videos from the Action Genome split, runs the pretrained STTran graph
 model on every annotated frame in each selected video, and materializes two
-parallel artefact streams.
+parallel artefact streams. Environment variables include STTRAN_MODE (predcls,
+sgcls, sgdet), STTRAN_CKPT, VIDEO_IDS, FRAME_OFFSET, FRAME_LIMIT, VIDEO_LIMIT,
+OUT_VIZ_ROOT, and OUT_LOGS_ROOT so compare runs can write under separate trees
+(for example output/logs/compare_mode/...). For sgdet, SGDET_STREAMING defaults
+to on: each frame is processed with its own det()+model() pass and the log file
+is flushed after every frame so long runs show progress instead of staying at a
+header-only log until a full batched forward finishes. SGDET_STREAMING=0 restores
+one batched pass over all T frames. The detector honours SGDET_RCNN_CHUNK and
+SGDET_VERBOSE for chunked Faster R-CNN progress on the batched path; on MPS, if
+SGDET_RCNN_CHUNK is unset, a smaller default chunk is applied to surface progress
+sooner. Logging uses pred_labels when the checkpoint exposes them (sgdet). The helper
+script run_sgdet_graph_demo.py offers a smaller default sgdet batch with its own
+output roots (SGDET_OUT_VIZ, SGDET_OUT_LOGS) so predcls artefact trees are not
+overwritten.
 
 First stream — machine-parsable logs:
   STTran/output/logs/<run>/<VIDEO>.log
@@ -193,15 +209,28 @@ displays the boxplots inline.
 Later sections pool scores in memory to print per-group means and standard
 deviations, derive example thresholds of the form mean plus a multiple of sigma,
 deep-scan Action Genome person_bbox.pkl for multi-person frames (finding only
-zero or one person per frame in practice), and finally show per-video
-edge_evolution thumbnails.
+zero or one person per frame in practice), show per-video edge_evolution
+thumbnails, and include Section 6 on star-shaped undirected topologies.
+
+Section 6 replaces a course-provided snippet that referenced an undefined
+all_graphs list and mislabelled a "graph isomorphism" check: the logic counts how
+often the collapsed undirected prediction graph (one edge per unordered node
+pair if any attention, spatial, or contact edge exists, consistent with Section
+1b) is a star graph (one hub of degree n-1 and n-1 leaves of degree 1, for n at
+least two). The Section 6 code cell is self-contained: it resolves STTRAN_DIR,
+adds it to sys.path, imports parse_terminal_log, uses LOGS_DIR from earlier cells
+when present or defaults to output/logs/first5_videos, aligns TOPK_S and
+TOPK_C with the rest of the notebook or environment defaults, builds log_paths
+and all_graphs, then prints counts and the star fraction. To analyse logs from
+another run, assign LOGS_DIR to the desired Path in the kernel before executing
+Section 6.
 
 The edge evolution grid historically failed when code flattened matplotlib axes
 arrays incorrectly (iterating rows of a 2D ndarray produced ndarray objects
 instead of Axes). The fix is to build subplots with fig.add_subplot in a loop or
-to call a tiny helper plot_edge_evolution_grid.py; the notebook last cell was
-inlined with the add_subplot pattern so each axis handle is unambiguously an
-Axes with imshow available.
+to call a tiny helper plot_edge_evolution_grid.py; the notebook uses the
+add_subplot pattern so each axis handle is unambiguously an Axes with imshow
+available.
 
 
 --------------------------------------------------------------------------------
@@ -258,15 +287,61 @@ presentation snippets parallel to this English technical tree.
    stats.
 
 5) Execute notebook Section 1b for spectral and degree CSVs, later sections for
-   thresholds and GT sanity, and the final cell once edge_evolution.png files
-   exist.
+   thresholds and GT sanity, the edge evolution grid once edge_evolution.png
+   files exist, and Section 6 for the star-topology statistic (or run Section 6
+   alone if logs and TOPK settings are already valid).
 
 6) Adjust rerender_with_thresholds.py thresholds if you need stricter visual
    narratives without recomputing neural forward passes.
 
 
 --------------------------------------------------------------------------------
-13. CLOSING REMARK
+13. RECENT ENGINEERING SESSION (SGDET, MPS, NOTEBOOK, REPOSITORY)
+--------------------------------------------------------------------------------
+
+(Recorded May 2026; consolidates a Cursor-assisted iteration on this codebase.)
+
+The following items were implemented or clarified in a focused development pass
+and are reflected in the current tree.
+
+SGDet behaviour and observability. Scene graph detection mode is much heavier
+than predicate classification because each step runs the full Faster R-CNN
+stack. Earlier runs looked "stuck" because a single batched forward over all
+frames could run for many minutes while the log file only contained the header
+until the forward completed. Streaming mode addresses this by processing one
+frame per det()+model() cycle, appending each frame block to the log and
+flushing immediately, with optional console lines per frame. Batched mode remains
+available when SGDET_STREAMING is set to 0, false, or no.
+
+Apple MPS robustness. Two fixes avoid common failures on Metal: in the RPN,
+tensor reshaping uses reshape instead of view so non-contiguous activations do
+not raise a view size error during sgdet inference. In STTran's object classifier
+path for sgdet and sgcls, the index tensor built with torch.arange for global
+node indices is created on the same device as the box index tensor, fixing a
+runtime error when the batch is a single frame on MPS (CPU indices indexing an
+MPS tensor).
+
+Operational hygiene. A long-running VS Code Pylint language server process was
+observed spinning at high CPU when analysing a very large notebook; terminating
+that process is safe and the IDE typically restarts the server. Routine CPU
+checks showed no stray training script; heavy usage was more often from the
+editor renderer and other desktop applications.
+
+Example command for a short sgdet compare run on one video (from the STTran
+directory, after setting AG_DATA_PATH to the Action Genome root): set
+STTRAN_MODE=sgdet, VIDEO_IDS to the mp4 name, FRAME_OFFSET and FRAME_LIMIT as
+needed, and OUT_LOGS_ROOT / OUT_VIZ_ROOT to separate output trees. Use python -u
+for unbuffered stdout. Checkpoint paths default to ckpts/sttran_sgdet.tar when
+mode is sgdet unless STTRAN_CKPT overrides.
+
+Repository. Changes were committed and pushed to the remote main branch of the
+STTran GitHub repository as part of the same effort, including the notebook
+Section 6 work, streaming driver logic, MPS-related fixes, and ancillary scripts
+where applicable.
+
+
+--------------------------------------------------------------------------------
+14. CLOSING REMARK
 --------------------------------------------------------------------------------
 
 This project combines a modern anticipatory scene graph architecture with a
