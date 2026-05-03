@@ -361,7 +361,7 @@ class STTran(nn.Module):
         self.s_rel_compress = nn.Linear(1936, self.spatial_class_num)
         self.c_rel_compress = nn.Linear(1936, self.contact_class_num)
 
-    def forward(self, entry, *, return_global_output: bool = False):
+    def forward(self, entry, return_global_output: bool = False):
 
         entry = self.object_classifier(entry)
 
