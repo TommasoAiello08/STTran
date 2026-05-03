@@ -146,6 +146,8 @@ def _boxplot_group(
     except Exception as e:
         raise SystemExit(f"Missing matplotlib. Import error: {e}")
 
+    from plot_matplotlib_style import plot_style_context
+
     if not scores_by_pred:
         raise SystemExit(f"No scores for plot: {title}")
 
@@ -163,46 +165,62 @@ def _boxplot_group(
     overall_mean = float(np.mean(all_scores)) if all_scores.size else 0.0
     overall_std = float(np.std(all_scores)) if all_scores.size else 0.0
 
+    # Y-axis: fit data (+ padding), not a fixed [0,1] band (scores still clamp to [0,1]).
+    if all_scores.size:
+        lo = float(np.min(all_scores))
+        hi = float(np.max(all_scores))
+        span = max(hi - lo, 1e-9)
+        pad = max(0.04 * span, 1e-4)
+        score_y_lo = max(0.0, lo - pad)
+        score_y_hi = min(1.0, hi + pad)
+        if score_y_hi - score_y_lo < 1e-6:
+            score_y_lo = max(0.0, lo - 0.03)
+            score_y_hi = min(1.0, hi + 0.03)
+    else:
+        score_y_lo, score_y_hi = 0.0, 1.0
+
     fig_w = max(12, len(labels) * 0.45)
-    fig_h = 7
-    plt.figure(figsize=(fig_w, fig_h))
-    ax = plt.gca()
+    fig_h = 7.2
 
-    bp = ax.boxplot(
-        data,
-        tick_labels=labels,
-        showfliers=False,
-        patch_artist=True,
-        medianprops=dict(color="#111827", linewidth=1.6),
-        boxprops=dict(linewidth=1.2),
-        whiskerprops=dict(linewidth=1.1),
-        capprops=dict(linewidth=1.1),
-    )
-    for b in bp["boxes"]:
-        b.set_facecolor("#93c5fd")
-        b.set_alpha(0.85)
-        b.set_edgecolor("#1d4ed8")
+    with plot_style_context():
+        fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=160)
 
-    ax.set_ylim(0.0, 1.0)
-    ax.set_ylabel("confidence score (softmax probability)")
-    ax.set_title(f"{title}\n{overall_label}: mean={overall_mean:.3f}  std={overall_std:.3f}")
-    ax.grid(True, axis="y", alpha=0.22)
-    plt.xticks(rotation=60, ha="right", fontsize=9)
+        bp = ax.boxplot(
+            data,
+            tick_labels=labels,
+            showfliers=False,
+            patch_artist=True,
+            medianprops=dict(color="#0f172a", linewidth=1.65),
+            boxprops=dict(linewidth=1.15, edgecolor="#3b82f6"),
+            whiskerprops=dict(linewidth=1.1, color="#64748b"),
+            capprops=dict(linewidth=1.1, color="#64748b"),
+        )
+        for b in bp["boxes"]:
+            b.set_facecolor("#bfdbfe")
+            b.set_alpha(0.92)
+            b.set_edgecolor("#2563eb")
 
-    # Annotate mean±std above each box
-    for i, (m, s, arr) in enumerate(zip(means, stds, data), start=1):
-        # place slightly above the 75th percentile (or mean if degenerate)
-        if arr.size:
-            y = float(np.quantile(arr, 0.75))
-        else:
-            y = m
-        y = min(0.98, y + 0.04)
-        ax.text(i, y, f"{m:.2f}±{s:.2f}", ha="center", va="bottom", fontsize=8, color="#111827")
+        ax.set_ylim(score_y_lo, score_y_hi)
+        ax.set_ylabel("Confidence score (softmax)")
+        ax.set_title(f"{title}\n{overall_label}: mean={overall_mean:.3f}  std={overall_std:.3f}")
+        ax.grid(True, axis="y", alpha=0.35)
+        plt.setp(ax.get_xticklabels(), rotation=60, ha="right")
 
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(out_png), exist_ok=True)
-    plt.savefig(out_png, dpi=220)
-    plt.close()
+        y_span = score_y_hi - score_y_lo
+        # Annotate mean±std just above each box (within current y limits)
+        for i, (m, s, arr) in enumerate(zip(means, stds, data), start=1):
+            if arr.size:
+                y = float(np.quantile(arr, 0.75))
+            else:
+                y = m
+            y = min(score_y_hi - 0.012 * y_span, y + 0.05 * y_span)
+            ax.text(i, y, f"{m:.2f}±{s:.2f}", ha="center", va="bottom", fontsize=8.5, color="#334155")
+
+        fig.patch.set_facecolor("white")
+        plt.tight_layout()
+        os.makedirs(os.path.dirname(out_png), exist_ok=True)
+        fig.savefig(out_png, dpi=220, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
 
     return overall_mean, overall_std
 

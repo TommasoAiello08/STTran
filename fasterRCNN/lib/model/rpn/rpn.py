@@ -46,14 +46,15 @@ class _RPN(nn.Module):
 
     @staticmethod
     def reshape(x, d):
+        # Use reshape (not view): on MPS/non-CUDA backends rpn_cls_score can be non-contiguous
+        # after conv; view() raises RuntimeError and SGDet never leaves the RPN.
         input_shape = x.size()
-        x = x.view(
+        return x.reshape(
             input_shape[0],
             int(d),
             int(float(input_shape[1] * input_shape[2]) / float(d)),
-            input_shape[3]
+            input_shape[3],
         )
-        return x
 
     def forward(self, base_feat, im_info, gt_boxes, num_boxes):
 

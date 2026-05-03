@@ -104,7 +104,7 @@ class ObjectClassifier(nn.Module):
             if new_scores.shape[0] > 0:
                 new_labels = torch.argmax(new_scores, dim=1) + 1
             else:
-                new_labels = torch.tensor([], dtype=torch.long).cuda(0)
+                new_labels = torch.tensor([], dtype=torch.long, device=pred_boxes.device)
 
             final_dists.append(scores)
             final_dists.append(new_scores)
@@ -146,7 +146,7 @@ class ObjectClassifier(nn.Module):
 
                 # use the infered object labels for new pair idx
                 HUMAN_IDX = torch.zeros([b, 1], dtype=torch.int64).to(obj_features.device)
-                global_idx = torch.arange(0, entry['boxes'].shape[0])
+                global_idx = torch.arange(0, entry['boxes'].shape[0], device=box_idx.device)
 
                 for i in range(b):
                     local_human_idx = torch.argmax(entry['distribution'][box_idx == i, 0]) # the local bbox index with highest human score in this frame
@@ -246,9 +246,17 @@ class ObjectClassifier(nn.Module):
                             keep = nms(cls_boxes[order, :], cls_scores[order], 0.6)  # hyperparameter
 
                             final_dists.append(cls_dists[keep.view(-1).long()])
-                            final_boxes.append(torch.cat((torch.tensor([[i]], dtype=torch.float).repeat(keep.shape[0],
-                                                                                                        1).cuda(0),
-                                                          cls_boxes[order, :][keep.view(-1).long()]), 1))
+                            final_boxes.append(
+                                torch.cat(
+                                    (
+                                        torch.tensor([[i]], dtype=torch.float, device=cls_boxes.device).repeat(
+                                            keep.shape[0], 1
+                                        ),
+                                        cls_boxes[order, :][keep.view(-1).long()],
+                                    ),
+                                    1,
+                                )
+                            )
                             final_feats.append(cls_feats[keep.view(-1).long()])
 
                 entry['boxes'] = torch.cat(final_boxes, dim=0)
@@ -261,7 +269,7 @@ class ObjectClassifier(nn.Module):
 
                 # use the infered object labels for new pair idx
                 HUMAN_IDX = torch.zeros([b, 1], dtype=torch.int64).to(box_idx.device)
-                global_idx = torch.arange(0, entry['boxes'].shape[0])
+                global_idx = torch.arange(0, entry['boxes'].shape[0], device=box_idx.device)
 
                 for i in range(b):
                     local_human_idx = torch.argmax(entry['distribution'][

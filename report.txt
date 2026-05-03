@@ -1,71 +1,281 @@
-STTran – Work report (macOS + visualization + stats + Colab)
+================================================================================
+EXTENDED PROJECT REPORT — STTran / Action Genome / Computer Vision coursework
+================================================================================
 
-This file summarizes the changes implemented in this repository session and how to use them.
+This document is a natural-language export of what this codebase does, how the
+pieces fit together, and what analysis and tooling were built around predicted
+scene graphs. It is meant to stand alone for a reader who opens the repository
+without the chat history that accompanied its development.
 
-1) Portable runtime fixes (macOS / CPU / MPS)
-- Removed/avoided native Cython/C++ extension dependencies where possible by adding pure-Python / TorchVision fallbacks.
-- Device handling: avoid hardcoded CUDA calls; support cuda/mps/cpu via dynamic device selection and safe checkpoint loading.
-- Transformer fixes for MPS compatibility (e.g. replacing unsupported ops, ensuring masks are bool, avoiding device mismatches).
 
-2) Graph generation pipeline (per-video, per-frame)
-Primary script: STTran/run_first5_videos_all_frames.py
+--------------------------------------------------------------------------------
+1. SCIENTIFIC AND ENGINEERING CONTEXT
+--------------------------------------------------------------------------------
 
-What it does:
-- loads Action Genome dataset (split train/test)
-- runs STTran predcls on every annotated frame in each selected video
-- writes a terminal-style per-video log to:
-  STTran/output/logs/first5_videos/<VIDEO>.log
-- renders per-frame scene graphs + timeline GIF to:
+The repository implements research on dynamic scene graph generation on the
+Action Genome dataset. The baseline is STTran (Spatial-Temporal Transformer for
+scene graphs). The primary research direction documented in README.md is APT
+(Anticipatory Pre-Training): a two-stage pipeline (anticipatory pre-training
+then fine-tuning) with a Progressive Temporal Encoder and pair tracking across
+frames, as in the paper "Dynamic Scene Graph Generation via Anticipatory
+Pre-training" (Li et al.), implemented in PyTorch on top of STTran-style
+components (Faster R-CNN features, relation heads for attention / spatial /
+contact groups, and so on).
+
+In parallel with full training and evaluation, the project invested heavily in
+a reproducible path from model predictions to human-readable logs, static
+visualizations, JSON exports, and quantitative dataset statistics. That path is
+what most of the "analysis" files and the dataset_analysis notebook describe.
+
+
+--------------------------------------------------------------------------------
+2. DATA AND RUNTIME ASSUMPTIONS
+--------------------------------------------------------------------------------
+
+Action Genome is expected under a conventional layout (see README.md), with
+annotations, frames, and video metadata. The Faster R-CNN checkpoint used by
+STTran is not shipped; GloVe embeddings can be auto-downloaded into data/.
+
+The coursework-oriented runs described here focus on batches of videos (not
+only "five" in name: limits are controlled by environment variables) under
+predcls-style inference: the model predicts object classes and relation
+predicates with confidence scores. Each frame yields a graph: nodes are
+detected entities with class labels and optional boxes; edges belong to three
+semantic groups (attention, spatial, contact) with string predicates and
+softmax-like scores in [0, 1].
+
+
+--------------------------------------------------------------------------------
+3. FROM MODEL OUTPUT TO TERMINAL LOGS AND IMAGES
+--------------------------------------------------------------------------------
+
+The driver script run_first5_videos_all_frames.py (despite the historical name)
+selects videos from the Action Genome split, runs the pretrained STTran graph
+model on every annotated frame in each selected video, and materializes two
+parallel artefact streams.
+
+First stream — machine-parsable logs:
+  STTran/output/logs/<run>/<VIDEO>.log
+
+Each log repeats a block pattern per frame: a node section listing integer ids,
+class names, and bounding boxes when available; then a predicted relations
+section with attention edges in a dedicated format and spatial/contact lines as
+"top-k" lists after pruning with TOPK_SPATIAL and TOPK_CONTACT style limits (the
+defaults used when generating logs must stay aligned with any script that
+parses them).
+
+Second stream — raster outputs per video directory:
   STTran/output/first5_videos/<VIDEO>/
 
-Visualization features:
-- nodes always rendered (even if isolated)
-- edges drawn for all 3 groups:
-  @ attention (human -> object)
-  ^ spatial   (object -> human)
-  + contact   (human -> object)
-- MultiDiGraph rendering to support multiple edges between same node pairs
-- edge labels concatenated into one readable box per node pair (top-1 text per group)
-- optional fast layout (circular) and layout reuse across frames
+Typical contents include one PNG per frame showing the graph layout, small
+legend text files, a timeline GIF when imageio is available, and optionally an
+edge_evolution.png summarizing how predicted edges vary over time for that
+video. Layout can be circular (fast) or spring-based; layout can be reused
+across frames for speed.
 
-3) Per-video machine-readable export
-Script: STTran/export_graphs_json.py
-- Reads logs and writes STTran/output/first5_videos/<VIDEO>/graphs.json containing all nodes/edges per frame.
+The module viz_terminal_scene_graphs.py is the contract between logs and the
+rest of the tooling. It defines typed structures (Node, Edge, FrameGraph),
+regular expressions that match the exact print format of the run script, a
+parser parse_terminal_log that returns a mapping from frame index to FrameGraph,
+and rendering helpers used both by the batch runner and by standalone
+re-visualization workflows.
 
-4) Dataset/prediction statistics & plots (from logs)
-- STTran/plot_log_frequencies.py
-  - frame-normalized presence frequencies
-  - assignment-normalized frequencies (edge-normalized predicates, node-normalized object classes)
-  - per-group predicate plots (attention/spatial/contact)
-  Outputs are stored under:
-    STTran/output/first5_videos/summary_plots/
 
-- STTran/plot_predicate_score_stats.py
-  - per-group predicate score boxplots (confidence distributions)
-  - per-predicate empirical confidence stats export:
-    predicate_confidence_stats.csv/json
+--------------------------------------------------------------------------------
+4. JSON EXPORT AND THRESHOLDED RE-RENDERING
+--------------------------------------------------------------------------------
 
-5) Thresholded re-render (no model re-run)
-Script: STTran/rerender_with_thresholds.py
-Rule:
-- For each (src,dst) pair and each group, keep only top-1 edge if score >= threshold; otherwise keep none for that group/pair.
-Thresholds can be passed via:
-  TH_ATT, TH_SPATIAL, TH_CONTACT
-Optionally restrict to a subset via:
-  VIDEO_IDS="0A8CF.mp4,0KER3.mp4"
+export_graphs_json.py reads the same logs and writes graphs.json per video: a
+structured dump of nodes and edges per frame for downstream tools or external
+notebooks.
 
-6) Notebook replication
-Notebook: STTran/dataset_analysis.ipynb
-- Reproduces frequency plots, boxplots, confidence stats, threshold computations, and GT person deep scan.
-- Displays all summary plots inline via IPython display.
+rerender_with_thresholds.py demonstrates analysis without touching the GPU model
+again: it re-reads logs, applies per-group score thresholds to keep at most one
+edge per (source, destination, group), and can regenerate visualizations under
+user-controlled stringency (environment variables for thresholds and optional
+video subsets).
 
-7) Colab runner (generate 200 videos)
-- STTran/colab/README.md
-- STTran/colab_run_200_videos.sh
-This provides a Colab-friendly way to produce:
-  STTran/output/first5_videos/<VIDEO>.mp4/
-for many videos (e.g. VIDEO_LIMIT=200) using AG_DATA_PATH on Colab/Drive.
 
-Notes / constraints discovered:
-- Action Genome `person_bbox.pkl` contains only 0 or 1 GT person box per frame (no multi-person frames in this annotation file).
+--------------------------------------------------------------------------------
+5. FREQUENCY ANALYSIS, LORENZ CURVES, AND VISUAL STYLE
+--------------------------------------------------------------------------------
 
+plot_log_frequencies.py is the quantitative backbone for "how imbalanced is the
+data we actually observe in predictions". It distinguishes two normalizations
+that answer different questions.
+
+Frame-normalized frequencies count, for each predicate or object class, how many
+distinct frames contain at least one instance of that label, divided by total
+frames across all logs. That measures prevalence of presence in time.
+
+Assignment-normalized frequencies count every edge or node label occurrence and
+divide by total edges (globally or per attention/spatial/contact group) or total
+nodes. That measures how mass is split across labels when multiple predictions
+per frame exist.
+
+The script generates bar charts (matplotlib Agg) for predicates and objects,
+including per-group predicate charts. Bars use thin black edges for separation
+instead of heavy white outlines. Output PNG names include predicate_frequency,
+object_frequency, edge-normalized variants, and group-specific filenames. The
+CLI respects environment variables for log directory, output directory, top-k
+for spatial/contact lines in the parser, and optional caps on how many category
+bars to draw for readability versus plotting all categories.
+
+A dedicated figure lorenz_label_imbalance.png summarizes inequality across
+categories using Lorenz curves on the same underlying counters: categories are
+sorted from rarest to most common; the horizontal axis is cumulative fraction of
+label types and the vertical axis is cumulative fraction of total count. A
+diagonal reference line corresponds to perfect equality; bending far below it
+indicates concentration in a few labels. Each subplot reports a discrete Gini
+coefficient for quick scalar comparison.
+
+plot_matplotlib_style.py centralizes appearance: built-in matplotlib style
+sheets in preference order, plus a sans-serif font stack that degrades gracefully
+to DejaVu Sans. Scripts wrap plotting in plot_style_context(); notebooks call
+apply_notebook_style() after inline backend setup so figures match between
+notebook and batch PNG generation.
+
+
+--------------------------------------------------------------------------------
+6. CONFIDENCE DISTRIBUTIONS AND BOX PLOTS
+--------------------------------------------------------------------------------
+
+plot_predicate_score_stats.py walks all logs, collects every edge score grouped
+by relation group and predicate string, and produces three boxplot images
+(attention, spatial, contact) with a cap on the number of predicates shown for
+readability. It also writes predicate_confidence_stats.csv and .json with
+empirical mean, standard deviation, quantiles, min, max, and counts per
+predicate, including an aggregated "all" group row for cross-checking.
+
+An important refinement is that the y-axis is no longer forced to the full
+[0, 1] interval when all scores sit in a narrow band: limits are derived from the
+data with padding, still clipped to [0, 1] because scores are probabilistic.
+Annotations above boxes were adjusted to respect the dynamic y limits.
+
+
+--------------------------------------------------------------------------------
+7. GRAPH STRUCTURE METRICS FROM LOGS
+--------------------------------------------------------------------------------
+
+graph_structure_analysis.py treats each parsed frame as an undirected simple
+graph: an edge exists between two nodes if any predicted relation (any group)
+links them; scores and predicate names are ignored for this layer. It computes
+per-class degree statistics (aggregating node occurrences across frames) and
+per-frame spectral summaries: eigenvalue gap of the adjacency matrix and the
+second eigenvalue of the normalized Laplacian (algebraic connectivity), with
+the standard isolated-vertex convention on the Laplacian diagonal.
+
+The dataset_analysis notebook saves node_degree_by_class.csv and
+spectral_per_frame.csv under summary_plots and displays descriptive statistics and
+histograms for the spectral columns.
+
+
+--------------------------------------------------------------------------------
+8. THE DATASET_ANALYSIS NOTEBOOK AS A NARRATIVE PIPELINE
+--------------------------------------------------------------------------------
+
+dataset_analysis.ipynb is the single entry point for reproducing figures and
+tables without re-running inference. It configures repository paths, inserts
+STTran on sys.path, applies the shared matplotlib style, and fixes TOPK
+parameters to match the logs.
+
+Section 1 calls into plot_log_frequencies: all bar charts plus Lorenz figures,
+with inline PNG previews using embedded bytes so Jupyter does not cache stale
+previews when files are overwritten at the same path.
+
+Section 1b runs graph_structure_analysis to export CSVs and quick spectral
+histograms.
+
+Section 2 invokes plot_predicate_score_stats.py via subprocess for parity with
+the command line, then moves CSV, JSON, and boxplot PNGs into summary_plots and
+displays the boxplots inline.
+
+Later sections pool scores in memory to print per-group means and standard
+deviations, derive example thresholds of the form mean plus a multiple of sigma,
+deep-scan Action Genome person_bbox.pkl for multi-person frames (finding only
+zero or one person per frame in practice), and finally show per-video
+edge_evolution thumbnails.
+
+The edge evolution grid historically failed when code flattened matplotlib axes
+arrays incorrectly (iterating rows of a 2D ndarray produced ndarray objects
+instead of Axes). The fix is to build subplots with fig.add_subplot in a loop or
+to call a tiny helper plot_edge_evolution_grid.py; the notebook last cell was
+inlined with the add_subplot pattern so each axis handle is unambiguously an
+Axes with imshow available.
+
+
+--------------------------------------------------------------------------------
+9. COLAB AND MINIMAL REPRODUCTION PATHS
+--------------------------------------------------------------------------------
+
+README.md and colab_minimal/ document running on Google Colab: GPU runtime,
+dataset paths on Drive, git or zip-based clone strategies, and scripts such as
+setup_colab.py and prepare_ag_zips.py to reduce friction. COLAB_SETUP_CHECKLIST
+mirrors the artefact tree expected under STTran/output so local and cloud runs
+stay comparable.
+
+
+--------------------------------------------------------------------------------
+10. TRAINING, EVALUATION, AND SMOKE TESTS (HIGH LEVEL)
+--------------------------------------------------------------------------------
+
+Beyond visualization, the repo contains train_pretrain.py, train_finetune.py,
+eval_apt.py, dataloaders for Action Genome and anticipatory variants, APT model
+code under lib/, and smoke tests that validate tensor shapes and forward passes
+without a full dataset. Those paths support the research story in README.md;
+they are not re-derived here line by line but are part of the same project tree.
+
+
+--------------------------------------------------------------------------------
+11. DIRECTORY HABITS WORTH REMEMBERING
+--------------------------------------------------------------------------------
+
+Logs live under STTran/output/logs/<run>/ as *.log files.
+
+Per-video raster and JSON products live under STTran/output/first5_videos/ or a
+run-specific sibling, with one folder per video id.
+
+Aggregated plots, Lorenz figures, spectral CSVs, degree tables, and moved
+confidence artefacts are gathered under summary_plots for notebook convenience.
+
+Nostri_Contenuti/ holds Italian-language planning notes, roadmaps, and
+presentation snippets parallel to this English technical tree.
+
+
+--------------------------------------------------------------------------------
+12. HOW TO REPRODUCE THE ANALYSIS STORY END TO END
+--------------------------------------------------------------------------------
+
+1) Produce or obtain logs and per-frame PNGs via run_first5_videos_all_frames.py
+   with consistent TOPK environment variables.
+
+2) Optionally export graphs.json per video with export_graphs_json.py.
+
+3) Run plot_log_frequencies.py from STTran or execute the notebook Section 1 to
+   regenerate all frequency and Lorenz PNGs.
+
+4) Run plot_predicate_score_stats.py or notebook Section 2 for boxplots and CSV
+   stats.
+
+5) Execute notebook Section 1b for spectral and degree CSVs, later sections for
+   thresholds and GT sanity, and the final cell once edge_evolution.png files
+   exist.
+
+6) Adjust rerender_with_thresholds.py thresholds if you need stricter visual
+   narratives without recomputing neural forward passes.
+
+
+--------------------------------------------------------------------------------
+13. CLOSING REMARK
+--------------------------------------------------------------------------------
+
+This project combines a modern anticipatory scene graph architecture with a
+practical, log-centric evaluation layer: anything expressed in the terminal logs
+can be turned into publication-style plots, inequality diagnostics, spectral
+fingerprints of predicted topology, and threshold-driven visualizations. The
+notebook ties those pieces into a single readable story for coursework or
+reports, while scripts remain the source of truth for batch reproducibility.
+
+================================================================================
+End of report
+================================================================================

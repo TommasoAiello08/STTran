@@ -81,6 +81,10 @@ class detector(nn.Module):
             counter = 0
             counter_image = 0
 
+            # Fewer frames per Faster R-CNN call = more frequent progress (env SGDET_RCNN_CHUNK, default 10).
+            rcnn_chunk = max(1, min(10, int(os.environ.get("SGDET_RCNN_CHUNK", "10"))))
+            sgdet_verbose = os.environ.get("SGDET_VERBOSE", "1").strip().lower() not in ("0", "false", "no")
+
             # create saved-bbox, labels, scores, features
             FINAL_BBOXES = torch.tensor([], device=device)
             FINAL_LABELS = torch.tensor([], dtype=torch.int64, device=device)
@@ -89,18 +93,18 @@ class detector(nn.Module):
             FINAL_BASE_FEATURES = torch.tensor([], device=device)
 
             while counter < im_data.shape[0]:
-                #compute 10 images in batch and  collect all frames data in the video
-                if counter + 10 < im_data.shape[0]:
-                    inputs_data = im_data[counter:counter + 10]
-                    inputs_info = im_info[counter:counter + 10]
-                    inputs_gtboxes = gt_boxes[counter:counter + 10]
-                    inputs_numboxes = num_boxes[counter:counter + 10]
+                end = min(counter + rcnn_chunk, im_data.shape[0])
+                inputs_data = im_data[counter:end]
+                inputs_info = im_info[counter:end]
+                inputs_gtboxes = gt_boxes[counter:end]
+                inputs_numboxes = num_boxes[counter:end]
 
-                else:
-                    inputs_data = im_data[counter:]
-                    inputs_info = im_info[counter:]
-                    inputs_gtboxes = gt_boxes[counter:]
-                    inputs_numboxes = num_boxes[counter:]
+                if sgdet_verbose:
+                    print(
+                        f"[sgdet] FasterRCNN forward frames [{counter}, {end}) / {im_data.shape[0]} "
+                        f"(chunk={rcnn_chunk}) ...",
+                        flush=True,
+                    )
 
                 rois, cls_prob, bbox_pred, base_feat, roi_features = self.fasterRCNN(inputs_data, inputs_info,
                                                                                      inputs_gtboxes, inputs_numboxes)
@@ -158,7 +162,10 @@ class detector(nn.Module):
 
                     counter_image += 1
 
-                counter += 10
+                if sgdet_verbose:
+                    print(f"[sgdet]   batch done (up to frame index {counter_image - 1} in this video tensor)", flush=True)
+
+                counter = end
             FINAL_BBOXES = torch.clamp(FINAL_BBOXES, 0)
             prediction = {'FINAL_BBOXES': FINAL_BBOXES, 'FINAL_LABELS': FINAL_LABELS, 'FINAL_SCORES': FINAL_SCORES,
                           'FINAL_FEATURES': FINAL_FEATURES, 'FINAL_BASE_FEATURES': FINAL_BASE_FEATURES}

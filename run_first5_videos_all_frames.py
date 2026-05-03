@@ -27,6 +27,18 @@ Env vars:
   VIZ_LAYOUT: 'circular' (fast) or 'spring' (slow, nicer)
   VIZ_REUSE_LAYOUT: '1' to reuse node positions across frames (faster)
   FRAME_OFFSET / FRAME_LIMIT: optional ints to process only a subset of frames per video
+  STTRAN_MODE: predcls | sgcls | sgdet (default predcls). Default checkpoint switches to
+               ``sttran_sgdet.tar`` when mode is sgdet unless STTRAN_CKPT is set.
+               Note: sgdet runs the full Faster R-CNN RPN; on Apple MPS a non-contiguous tensor
+               bug in the upstream RPN was fixed (``rpn.py`` uses ``reshape`` instead of ``view``).
+               SGDet is **much slower** than predcls (minutes per short clip on MPS). By default
+               ``SGDET_STREAMING=1`` runs one frame per ``det()``+``model()`` so the ``.log`` grows
+               frame-by-frame (set ``0`` for one batched pass on all T frames). Progress prints also
+               come from ``lib/object_detector.py`` (``[sgdet]`` lines). Tune ``SGDET_RCNN_CHUNK`` (1–10,
+               default 10) for batched mode: smaller = more frequent progress but **more** RCNN calls.
+               ``SGDET_VERBOSE=0`` silences those prints.
+  OUT_VIZ_ROOT / OUT_LOGS_ROOT: optional absolute or cwd-relative roots for PNGs and logs
+               (default: output/first5_videos and output/logs/first5_videos).
 """
 
 from __future__ import annotations
@@ -109,12 +121,81 @@ def _safe_stem(frame_rel: str) -> str:
     return stem
 
 
+def _write_one_log_frame(
+    log,
+    ds,
+    *,
+    internal_frame_idx: int,
+    orig_frame_i: int,
+    boxes: np.ndarray,
+    labels: np.ndarray,
+    im_idx_np: np.ndarray,
+    pair_idx_all: np.ndarray,
+    att_all: np.ndarray,
+    spa_all: np.ndarray,
+    con_all: np.ndarray,
+    topk_per_group: int,
+    edge_thresh: float,
+    max_rels: int,
+) -> None:
+    """Append one frame block to the terminal-style log (matches batched SGDet / predcls layout)."""
+    node_ids = np.where(boxes[:, 0] == internal_frame_idx)[0].tolist()
+    log.write(f"\n=== Nodes (frame {orig_frame_i}) ===\n")
+    for ni in node_ids:
+        cls = ds.object_classes[int(labels[ni])]
+        x1, y1, x2, y2 = boxes[ni, 1:].tolist()
+        log.write(f"  id={ni:3d}  {cls:18s}  box=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f})\n")
+
+    log.write(f"\n=== Predicted relations (frame {orig_frame_i}) ===\n")
+
+    mask = im_idx_np == internal_frame_idx
+    rel_ids = np.where(mask)[0]
+    shown = 0
+    for rid in rel_ids:
+        s, o = int(pair_idx_all[rid, 0]), int(pair_idx_all[rid, 1])
+        subj = ds.object_classes[int(labels[s])]
+        obj = ds.object_classes[int(labels[o])]
+
+        top_att = topk_indices(att_all[rid], k=topk_per_group)
+        top_spa = topk_indices(spa_all[rid], k=topk_per_group)
+        top_con = topk_indices(con_all[rid], k=topk_per_group)
+
+        wrote_any_att = False
+        for att_i, att_sc in top_att:
+            if att_sc < edge_thresh:
+                continue
+            att_name = ds.attention_relationships[int(att_i)]
+            log.write(f"  ({s}) {subj}  --att[{att_name}:{att_sc:.2f}]-->  ({o}) {obj}\n")
+            wrote_any_att = True
+            shown += 1
+            if shown >= max_rels:
+                break
+        if shown >= max_rels:
+            break
+
+        if wrote_any_att:
+            spa_items = [(i, sc) for (i, sc) in top_spa if sc >= edge_thresh]
+            con_items = [(i, sc) for (i, sc) in top_con if sc >= edge_thresh]
+            spa_str = ", ".join(f"{ds.spatial_relationships[i]}:{sc:.2f}" for i, sc in spa_items)
+            con_str = ", ".join(f"{ds.contacting_relationships[i]}:{sc:.2f}" for i, sc in con_items)
+            log.write(f"        spatial top: {spa_str}\n")
+            log.write(f"        contact  top: {con_str}\n")
+
+        if shown >= max_rels:
+            break
+
+
 def main():
     data_path = os.environ.get("AG_DATA_PATH")
     if not data_path:
         raise SystemExit("Set AG_DATA_PATH to your ActionGenome root (e.g. /.../dataset/ag)")
 
-    ckpt_path = os.environ.get("STTRAN_CKPT", "ckpts/sttran_predcls.tar")
+    sttran_mode = os.environ.get("STTRAN_MODE", "predcls").strip().lower()
+    if sttran_mode not in ("predcls", "sgcls", "sgdet"):
+        raise SystemExit("STTRAN_MODE must be one of: predcls, sgcls, sgdet")
+
+    default_ckpt = "ckpts/sttran_sgdet.tar" if sttran_mode == "sgdet" else "ckpts/sttran_predcls.tar"
+    ckpt_path = os.environ.get("STTRAN_CKPT", default_ckpt)
     max_rels = int(os.environ.get("MAX_RELS", "20"))
     split = os.environ.get("SPLIT", "test").strip().lower()
     if split not in ("train", "test"):
@@ -127,6 +208,7 @@ def main():
     print(f"device: {device}")
     print(f"data_path: {data_path}")
     print(f"ckpt: {ckpt_path}")
+    print(f"STTRAN_MODE: {sttran_mode}")
     print(f"split: {split}")
 
     frame_list_path = os.path.join(data_path, "annotations", "frame_list.txt")
@@ -177,11 +259,13 @@ def main():
     print("videos:", vids)
 
     # Load detector + STTran once
-    det = detector(train=False, object_classes=ds.object_classes, use_SUPPLY=True, mode="predcls").to(device=device)
+    det = detector(
+        train=False, object_classes=ds.object_classes, use_SUPPLY=True, mode=sttran_mode
+    ).to(device=device)
     det.eval()
 
     model = STTran(
-        mode="predcls",
+        mode=sttran_mode,
         attention_class_num=len(ds.attention_relationships),
         spatial_class_num=len(ds.spatial_relationships),
         contact_class_num=len(ds.contacting_relationships),
@@ -195,8 +279,17 @@ def main():
     model.load_state_dict(ckpt["state_dict"], strict=False)
     print("checkpoint loaded")
 
-    out_logs_root = os.path.abspath(os.path.join(os.getcwd(), "output", "logs", "first5_videos"))
-    out_viz_root = os.path.abspath(os.path.join(os.getcwd(), "output", "first5_videos"))
+    if sttran_mode == "sgdet" and device.type == "mps" and os.environ.get("SGDET_RCNN_CHUNK") is None:
+        # First Faster R-CNN batch is often the long “silent” stretch; slightly smaller chunks
+        # surface progress sooner without exploding the number of forwards too much.
+        os.environ.setdefault("SGDET_RCNN_CHUNK", "4")
+
+    out_logs_root = os.path.abspath(
+        os.environ.get("OUT_LOGS_ROOT", os.path.join(os.getcwd(), "output", "logs", "first5_videos"))
+    )
+    out_viz_root = os.path.abspath(
+        os.environ.get("OUT_VIZ_ROOT", os.path.join(os.getcwd(), "output", "first5_videos"))
+    )
     ensure_dirs(out_logs_root, out_viz_root)
     viz_layout = os.environ.get("VIZ_LAYOUT", "circular").strip().lower()
     reuse_layout = os.environ.get("VIZ_REUSE_LAYOUT", "1").strip() not in ("0", "false", "no")
@@ -227,6 +320,8 @@ def main():
 
         T = im_data.shape[0]
         print(f"annotated frames in loader: {T}")
+        entry = None
+        pred = None
 
         # Avoid deepcopy here; tensors coming from the dataset can be moved directly.
         im_data = im_data.to(device)
@@ -236,82 +331,126 @@ def main():
 
         suffix = f"_off{start}_n{T}" if (start != 0 or frame_limit is not None) else ""
         log_path = os.path.join(out_logs_root, f"{vid}{suffix}.log")
-        with open(log_path, "w") as log:
+        use_sgdet_stream = (
+            sttran_mode == "sgdet"
+            and os.environ.get("SGDET_STREAMING", "1").strip().lower() not in ("0", "false", "no")
+        )
+        # Line-buffered so the header appears on disk immediately (SGDet can sit in det() for a long time).
+        with open(log_path, "w", buffering=1) as log:
             log.write(f"video: {vid}\n")
+            log.write(f"mode: {sttran_mode}\n")
             log.write(f"frames: {T}\n")
             log.write(f"frame_offset: {start}\n")
+            log.flush()
 
-            with torch.inference_mode():
-                entry = det(im_data, im_info, gt_boxes, num_boxes, gt_annotation_video, im_all=None)
-                pred = model(entry)
+            if use_sgdet_stream:
+                print(
+                    "\n[sgdet] Streaming (SGDET_STREAMING=1): one frame per det()+model(); "
+                    ".log grows after each frame.\n",
+                    flush=True,
+                )
+                for fi in range(T):
+                    orig_i = start + fi
+                    print(f"[sgdet] video {vid} frame {fi + 1}/{T} (dataset frame idx {orig_i}) ...", flush=True)
+                    im1 = im_data[fi : fi + 1]
+                    info1 = im_info[fi : fi + 1]
+                    gtb1 = gt_boxes[fi : fi + 1]
+                    nb1 = num_boxes[fi : fi + 1]
+                    gtann1 = [gt_annotation_video[fi]]
+                    with torch.inference_mode():
+                        entry = det(im1, info1, gtb1, nb1, gtann1, im_all=None)
+                        pred = model(entry)
 
-            boxes = pred["boxes"].detach().cpu().numpy()  # (N,5) [im,x1,y1,x2,y2]
-            labels = pred["labels"].detach().cpu().numpy()
+                    boxes = pred["boxes"].detach().cpu().numpy()
+                    if "pred_labels" in pred:
+                        labels = pred["pred_labels"].detach().cpu().numpy()
+                    else:
+                        labels = pred["labels"].detach().cpu().numpy()
 
-            # Precompute per-frame relation arrays on CPU for stable parsing
-            im_idx_cpu = pred["im_idx"].detach().cpu()
-            # Sometimes float im_idx; normalize to int for masking
-            if im_idx_cpu.dtype.is_floating_point:
-                im_idx_int = im_idx_cpu.long()
+                    im_idx_cpu = pred["im_idx"].detach().cpu()
+                    if im_idx_cpu.dtype.is_floating_point:
+                        im_idx_int = im_idx_cpu.long()
+                    else:
+                        im_idx_int = im_idx_cpu
+                    im_idx_np = im_idx_int.numpy()
+
+                    pair_idx_all = pred["pair_idx"].detach().cpu().numpy()
+                    att_all = torch.softmax(pred["attention_distribution"].detach().cpu(), dim=1).numpy()
+                    spa_all = torch.softmax(pred["spatial_distribution"].detach().cpu(), dim=1).numpy()
+                    con_all = torch.softmax(pred["contacting_distribution"].detach().cpu(), dim=1).numpy()
+
+                    _write_one_log_frame(
+                        log,
+                        ds,
+                        internal_frame_idx=0,
+                        orig_frame_i=orig_i,
+                        boxes=boxes,
+                        labels=labels,
+                        im_idx_np=im_idx_np,
+                        pair_idx_all=pair_idx_all,
+                        att_all=att_all,
+                        spa_all=spa_all,
+                        con_all=con_all,
+                        topk_per_group=topk_per_group,
+                        edge_thresh=edge_thresh,
+                        max_rels=max_rels,
+                    )
+                    log.flush()
+                    del entry, pred
+                    entry = pred = None
             else:
-                im_idx_int = im_idx_cpu
-            im_idx_np = im_idx_int.numpy()
+                if sttran_mode == "sgdet":
+                    print(
+                        "\n[sgdet] Batched (SGDET_STREAMING=0): one Faster R-CNN pass on all T frames; "
+                        "log body appears only after det()+model().\n",
+                        flush=True,
+                    )
 
-            pair_idx_all = pred["pair_idx"].detach().cpu().numpy()
-            att_all = torch.softmax(pred["attention_distribution"].detach().cpu(), dim=1).numpy()
-            spa_all = torch.softmax(pred["spatial_distribution"].detach().cpu(), dim=1).numpy()
-            con_all = torch.softmax(pred["contacting_distribution"].detach().cpu(), dim=1).numpy()
+                with torch.inference_mode():
+                    entry = det(im_data, im_info, gt_boxes, num_boxes, gt_annotation_video, im_all=None)
+                    pred = model(entry)
 
-            for frame_i in range(T):
-                node_ids = np.where(boxes[:, 0] == frame_i)[0].tolist()
-                # keep original frame index in the header for mapping/visualization
-                orig_frame_i = start + frame_i
-                log.write(f"\n=== Nodes (frame {orig_frame_i}) ===\n")
-                for ni in node_ids:
-                    cls = ds.object_classes[int(labels[ni])]
-                    x1, y1, x2, y2 = boxes[ni, 1:].tolist()
-                    log.write(f"  id={ni:3d}  {cls:18s}  box=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f})\n")
+                if sttran_mode == "sgdet":
+                    print(
+                        "[sgdet] Detector + STTran finished; writing relations to log and rendering PNGs.\n",
+                        flush=True,
+                    )
 
-                log.write(f"\n=== Predicted relations (frame {orig_frame_i}) ===\n")
+                boxes = pred["boxes"].detach().cpu().numpy()  # (N,5) [im,x1,y1,x2,y2]
+                if "pred_labels" in pred:
+                    labels = pred["pred_labels"].detach().cpu().numpy()
+                else:
+                    labels = pred["labels"].detach().cpu().numpy()
 
-                mask = (im_idx_np == frame_i)
-                rel_ids = np.where(mask)[0]
-                shown = 0
-                for rid in rel_ids:
-                    s, o = int(pair_idx_all[rid, 0]), int(pair_idx_all[rid, 1])
-                    subj = ds.object_classes[int(labels[s])]
-                    obj = ds.object_classes[int(labels[o])]
+                im_idx_cpu = pred["im_idx"].detach().cpu()
+                if im_idx_cpu.dtype.is_floating_point:
+                    im_idx_int = im_idx_cpu.long()
+                else:
+                    im_idx_int = im_idx_cpu
+                im_idx_np = im_idx_int.numpy()
 
-                    top_att = topk_indices(att_all[rid], k=topk_per_group)
-                    top_spa = topk_indices(spa_all[rid], k=topk_per_group)
-                    top_con = topk_indices(con_all[rid], k=topk_per_group)
+                pair_idx_all = pred["pair_idx"].detach().cpu().numpy()
+                att_all = torch.softmax(pred["attention_distribution"].detach().cpu(), dim=1).numpy()
+                spa_all = torch.softmax(pred["spatial_distribution"].detach().cpu(), dim=1).numpy()
+                con_all = torch.softmax(pred["contacting_distribution"].detach().cpu(), dim=1).numpy()
 
-                    # Attention: write one att line per predicate (so parser can build multiple @ edges)
-                    wrote_any_att = False
-                    for att_i, att_sc in top_att:
-                        if att_sc < edge_thresh:
-                            continue
-                        att_name = ds.attention_relationships[int(att_i)]
-                        log.write(f"  ({s}) {subj}  --att[{att_name}:{att_sc:.2f}]-->  ({o}) {obj}\n")
-                        wrote_any_att = True
-                        shown += 1
-                        if shown >= max_rels:
-                            break
-                    if shown >= max_rels:
-                        break
-
-                    # Only attach spatial/contact "top:" blocks to the *last* attention line we wrote
-                    # (the parser uses pending_pair from the most recent att line).
-                    if wrote_any_att:
-                        spa_items = [(i, sc) for (i, sc) in top_spa if sc >= edge_thresh]
-                        con_items = [(i, sc) for (i, sc) in top_con if sc >= edge_thresh]
-                        spa_str = ", ".join(f"{ds.spatial_relationships[i]}:{sc:.2f}" for i, sc in spa_items)
-                        con_str = ", ".join(f"{ds.contacting_relationships[i]}:{sc:.2f}" for i, sc in con_items)
-                        log.write(f"        spatial top: {spa_str}\n")
-                        log.write(f"        contact  top: {con_str}\n")
-
-                    if shown >= max_rels:
-                        break
+                for frame_i in range(T):
+                    _write_one_log_frame(
+                        log,
+                        ds,
+                        internal_frame_idx=frame_i,
+                        orig_frame_i=start + frame_i,
+                        boxes=boxes,
+                        labels=labels,
+                        im_idx_np=im_idx_np,
+                        pair_idx_all=pair_idx_all,
+                        att_all=att_all,
+                        spa_all=spa_all,
+                        con_all=con_all,
+                        topk_per_group=topk_per_group,
+                        edge_thresh=edge_thresh,
+                        max_rels=max_rels,
+                    )
 
         # Render visuals using the same parser/renderer
         frames = parse_terminal_log(log_path, topk_spatial=topk_per_group, topk_contact=topk_per_group)
@@ -389,7 +528,11 @@ def main():
                 rf.write("\n")
 
         # free some memory between videos
-        del im_data, im_info, gt_boxes, num_boxes, entry, pred
+        del im_data, im_info, gt_boxes, num_boxes
+        if entry is not None:
+            del entry
+        if pred is not None:
+            del pred
         if device.type == "mps":
             try:
                 torch.mps.empty_cache()
