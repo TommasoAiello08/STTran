@@ -3,10 +3,16 @@ import torch
 from torch import nn
 from torch.nn.modules.utils import _pair
 
+# Always import TorchVision op as a safe fallback.
+from torchvision.ops import roi_pool as _tv_roi_pool
+
+_HAS_C = False
 try:
     from fasterRCNN.lib.model import _C  # type: ignore
     from torch.autograd import Function
     from torch.autograd.function import once_differentiable
+
+    _HAS_C = True
 
     class _ROIPool(Function):
         @staticmethod
@@ -42,17 +48,26 @@ try:
             )
             return grad_input, None, None, None
 
-    roi_pool = _ROIPool.apply
+    _roi_pool_c = _ROIPool.apply
 except Exception:
-    from torchvision.ops import roi_pool as _tv_roi_pool
+    _HAS_C = False
+    _roi_pool_c = None  # type: ignore
 
-    def roi_pool(input, roi, output_size, spatial_scale):
-        return _tv_roi_pool(
-            input,
-            roi,
-            output_size=_pair(output_size),
-            spatial_scale=spatial_scale,
-        )
+
+def roi_pool(input, roi, output_size, spatial_scale):
+    """
+    Robust ROIPool:
+    - If the vendored C++/CUDA op exists *and* tensors are CUDA, use it.
+    - Otherwise fall back to TorchVision's roi_pool (works on CPU and CUDA).
+    """
+    if _HAS_C and input.is_cuda and roi.is_cuda:
+        return _roi_pool_c(input, roi, output_size, spatial_scale)  # type: ignore[misc]
+    return _tv_roi_pool(
+        input,
+        roi,
+        output_size=_pair(output_size),
+        spatial_scale=spatial_scale,
+    )
 
 
 class ROIPool(nn.Module):
