@@ -118,6 +118,27 @@ def _list_video_ids(json_dir: Path) -> list[str]:
     return vids
 
 
+def _resolve_frames_dir(dataset_root: Path, split: str, video_id: str) -> tuple[Path | None, str]:
+    """
+    Find the directory of extracted frames for ``video_id``.
+
+    Official / repacked zips sometimes put ``train_480/*.json`` next to frames that actually
+    live under ``val_frames_480`` or ``test_frames_480`` (e.g. ``ILSVRC2015_val_*`` stems).
+    """
+    primary = f"{split}_frames_480"
+    others = ("train_frames_480", "val_frames_480", "test_frames_480")
+    ordered = [primary] + [o for o in others if o != primary]
+    seen: set[str] = set()
+    for name in ordered:
+        if name in seen:
+            continue
+        seen.add(name)
+        p = dataset_root / name / video_id
+        if p.is_dir():
+            return p, name
+    return None, ""
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -382,10 +403,22 @@ def main() -> None:
             losses = []
             skipped_no_frames = 0
             skipped_empty_target = 0
+            skipped_missing_frames_dir = 0
+            skipped_frames_subdir_mismatch = 0
             frame_start = max(0, int(args.frame_start))
             for vi, video_id in enumerate(vids):
                 jp = json_dir / f"{video_id}.json"
-                frames_dir = root / frames_subdir / video_id
+                frames_dir, frames_sub_used = _resolve_frames_dir(root, str(args.split), video_id)
+                if frames_dir is None:
+                    skipped_missing_frames_dir += 1
+                    if vi % log_every == 0:
+                        print(
+                            f"[skip] no frames dir for {video_id} "
+                            f"(tried {args.split}_frames_480 + train/val/test_frames_480 under {root})"
+                        )
+                    continue
+                if frames_sub_used != frames_subdir:
+                    skipped_frames_subdir_mismatch += 1
                 vidvrd = json.loads(jp.read_text(encoding="utf-8"))
                 frame_files = sorted(
                     [n for n in os.listdir(frames_dir) if n.lower().endswith((".jpg", ".jpeg", ".png"))]
@@ -436,7 +469,9 @@ def main() -> None:
             print(
                 f"epoch {epoch + 1}/{args.epochs}  mean_loss={sum(losses)/len(losses):.4f}  "
                 f"steps={len(losses)}  skipped_no_frames={skipped_no_frames}  "
-                f"skipped_empty_target={skipped_empty_target}"
+                f"skipped_empty_target={skipped_empty_target}  "
+                f"skipped_missing_frames_dir={skipped_missing_frames_dir}  "
+                f"resolved_nondefault_frames_subdir={skipped_frames_subdir_mismatch}"
             )
 
         out_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
