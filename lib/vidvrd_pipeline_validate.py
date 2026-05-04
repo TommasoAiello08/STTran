@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -181,6 +182,7 @@ def validate_vidvrd_sample_pipeline(
     seed: int = 7,
     base_ckpt_path: Optional[str] = None,
     run_forward: bool = True,
+    debug_trace: bool = False,
 ) -> VidvrdPipelineValidationResult:
     """
     Validate one video: JSON + folder of frames → ``entry`` / ``pred_target`` + optional forward.
@@ -372,7 +374,9 @@ def validate_vidvrd_sample_pipeline(
             seed=seed,
         )
     except Exception as e:
-        out.errors.append(f"build_vidvrd_predcls_entry failed: {e}")
+        out.errors.append(f"build_vidvrd_predcls_entry failed: {type(e).__name__}: {e}")
+        if debug_trace:
+            out.diagnostics["build_vidvrd_predcls_entry_traceback"] = traceback.format_exc()
         return out
 
     out.diagnostics["skipped_relation_msgs"] = len(skipped)
@@ -544,6 +548,11 @@ if __name__ == "__main__":
     p.add_argument("--expected_hw", type=str, default="", help="Optional H,W e.g. 480,854")
     p.add_argument("--max_frames", type=int, default=32)
     p.add_argument("--no_forward", action="store_true", help="Skip STTran checkpoint load + forward")
+    p.add_argument(
+        "--debug_trace",
+        action="store_true",
+        help="On failure, include full Python traceback in diagnostics.",
+    )
     args = p.parse_args()
 
     exp: Optional[Tuple[int, int]] = None
@@ -560,6 +569,7 @@ if __name__ == "__main__":
             expected_hw=exp,
             max_frames=args.max_frames,
             run_forward=not args.no_forward,
+            debug_trace=bool(args.debug_trace),
             num_vidvrd_predicates=None if int(args.num_predicates) == 0 else int(args.num_predicates),
         )
     else:
@@ -571,6 +581,7 @@ if __name__ == "__main__":
             expected_hw=exp,
             max_frames=args.max_frames,
             run_forward=not args.no_forward,
+            debug_trace=bool(args.debug_trace),
             num_vidvrd_predicates=None if int(args.num_predicates) == 0 else int(args.num_predicates),
         )
 
