@@ -532,6 +532,15 @@ if __name__ == "__main__":
         help="If set (and dataset_root is empty), unzip this VIDVRD dataset zip and use it.",
     )
     p.add_argument("--video_id", type=str, default="ILSVRC2015_train_00010001")
+    p.add_argument(
+        "--num_predicates",
+        type=int,
+        default=132,
+        help=(
+            "VIDVRD head size. If you did not pass full predicate_names, set this to 0 to "
+            "infer from the single JSON's predicates (smoke test only)."
+        ),
+    )
     p.add_argument("--expected_hw", type=str, default="", help="Optional H,W e.g. 480,854")
     p.add_argument("--max_frames", type=int, default=32)
     p.add_argument("--no_forward", action="store_true", help="Skip STTran checkpoint load + forward")
@@ -551,6 +560,7 @@ if __name__ == "__main__":
             expected_hw=exp,
             max_frames=args.max_frames,
             run_forward=not args.no_forward,
+            num_vidvrd_predicates=None if int(args.num_predicates) == 0 else int(args.num_predicates),
         )
     else:
         if not args.json or not args.frames_dir:
@@ -561,6 +571,7 @@ if __name__ == "__main__":
             expected_hw=exp,
             max_frames=args.max_frames,
             run_forward=not args.no_forward,
+            num_vidvrd_predicates=None if int(args.num_predicates) == 0 else int(args.num_predicates),
         )
 
     print("ok:", r.ok)
