@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 import zipfile
 from pathlib import Path
@@ -163,7 +164,33 @@ def main() -> None:
         "--max_videos",
         type=int,
         default=2,
-        help="How many videos to iterate (debug runs).",
+        help="Cap videos per epoch (debug). Use 0 for **all** videos in the split (one full epoch over the dataset).",
+    )
+    ap.add_argument(
+        "--video_ids",
+        type=str,
+        default="",
+        help=(
+            "Optional comma-separated stems (e.g. ILSVRC2015_train_00008004,ILSVRC2015_train_00010006). "
+            "If set, only these videos are used (still subject to --max_videos cap unless 0)."
+        ),
+    )
+    ap.add_argument(
+        "--shuffle_videos",
+        action="store_true",
+        help="Shuffle video order each epoch (uses --seed + epoch).",
+    )
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Base RNG seed for --shuffle_videos.",
+    )
+    ap.add_argument(
+        "--log_every",
+        type=int,
+        default=1,
+        help="Print a line every N videos (use 5–50 during full-epoch runs to reduce log spam).",
     )
     ap.add_argument(
         "--max_frames",
@@ -277,6 +304,38 @@ def main() -> None:
 
     num_obj_classes = len(load_ag_label_bundle()[0])
 
+    # Real-data paths + featurizer once (not per epoch).
+    _build_im = None
+    json_dir: Path | None = None
+    root: Path | None = None
+    frames_subdir = ""
+    featurizer = None
+    if not args.synthetic:
+        from lib.vidvrd_pipeline_validate import _build_im_data_im_info as _build_im
+
+        split = str(args.split)
+        frames_subdir = f"{split}_frames_480"
+        json_subdir = f"{split}_480"
+        root = Path(dataset_root)
+        json_dir = root / json_subdir
+        if mock_ft:
+            featurizer = VidvrdMockFeaturizer().to(device)
+            featurizer.eval()
+        else:
+            from lib.object_detector import detector
+            from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+
+            object_classes = load_ag_label_bundle()[0]
+            det = detector(
+                train=False,
+                object_classes=object_classes,
+                use_SUPPLY=True,
+                mode="predcls",
+            ).to(device)
+            det.eval()
+            featurizer = VidvrdPredclsFeaturizer(det.fasterRCNN, chunk_frames=10).to(device)
+            featurizer.eval()
+
     # 3) Training loop — replace synthetic block with your DataLoader.
     for epoch in range(args.epochs):
         if args.synthetic:
@@ -291,37 +350,38 @@ def main() -> None:
             )
             print(f"epoch {epoch + 1}/{args.epochs}  synthetic_loss={loss:.4f}")
         else:
-            from lib.vidvrd_pipeline_validate import _build_im_data_im_info as _build_im  # reuse exact preprocessing
+            assert json_dir is not None and root is not None and featurizer is not None and _build_im is not None
 
-            split = str(args.split)
-            frames_subdir = f"{split}_frames_480"
-            json_subdir = f"{split}_480"
-            root = Path(dataset_root)
-            json_dir = root / json_subdir
-            vids = _list_video_ids(json_dir)[: max(0, int(args.max_videos))]
-            if not vids:
-                raise SystemExit(f"No videos found under: {str(json_dir)!r}")
+            all_vids = _list_video_ids(json_dir)
+            if args.video_ids.strip():
+                want = {s.strip() for s in args.video_ids.split(",") if s.strip()}
+                all_vids = [v for v in all_vids if v in want]
+                missing = want - set(all_vids)
+                if missing:
+                    print(f"[warn] --video_ids not found in {json_dir}: {sorted(missing)[:8]}...")
+                if not all_vids:
+                    raise SystemExit(f"No matching videos for --video_ids under {json_dir!r}")
 
-            # Build detector/featurizer once per epoch (keeps code simple; you can hoist it outside later).
-            if mock_ft:
-                featurizer = VidvrdMockFeaturizer().to(device)
-                featurizer.eval()
+            mv = int(args.max_videos)
+            if mv <= 0:
+                vids = all_vids
             else:
-                from lib.object_detector import detector
-                from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+                vids = all_vids[:mv]
 
-                object_classes = load_ag_label_bundle()[0]
-                det = detector(
-                    train=False,
-                    object_classes=object_classes,
-                    use_SUPPLY=True,
-                    mode="predcls",
-                ).to(device)
-                det.eval()
-                featurizer = VidvrdPredclsFeaturizer(det.fasterRCNN, chunk_frames=10).to(device)
-                featurizer.eval()
+            if args.shuffle_videos:
+                rng = random.Random(int(args.seed) + int(epoch) * 100_003)
+                vids = vids.copy()
+                rng.shuffle(vids)
+
+            log_every = max(1, int(args.log_every))
+            print(
+                f"epoch {epoch + 1}/{args.epochs}  videos_in_epoch={len(vids)}  "
+                f"(total_json={len(_list_video_ids(json_dir))})  shuffle={bool(args.shuffle_videos)}"
+            )
 
             losses = []
+            skipped_no_frames = 0
+            skipped_empty_target = 0
             frame_start = max(0, int(args.frame_start))
             for vi, video_id in enumerate(vids):
                 jp = json_dir / f"{video_id}.json"
@@ -337,7 +397,9 @@ def main() -> None:
                 )
                 T_use = min(len(frame_files) - fs, meta_fc - fs, int(args.max_frames))
                 if T_use <= 0:
-                    print(f"[skip] no frames: {video_id}")
+                    skipped_no_frames += 1
+                    if vi % log_every == 0:
+                        print(f"[skip] no frames: {video_id}")
                     continue
 
                 im_data, im_info, _scales = _build_im(
@@ -354,19 +416,28 @@ def main() -> None:
                     seed=epoch * 1000 + vi,
                     frame_start=fs,
                 )
-                if skipped:
-                    # keep it short; detailed skip reasons are in the validator
+                if skipped and vi % log_every == 0:
                     print(f"[warn] {video_id}: skipped_relation_msgs={len(skipped)}")
                 if pred_target.numel() == 0:
-                    print(f"[skip] empty pred_target (no pairs in window): {video_id}")
+                    skipped_empty_target += 1
+                    if vi % log_every == 0:
+                        print(f"[skip] empty pred_target (no pairs in window): {video_id}")
                     continue
                 loss = train_step_vidvrd(multi, entry, pred_target, optimizer, device=device)
                 losses.append(loss)
-                print(f"epoch {epoch + 1}/{args.epochs}  video {vi + 1}/{len(vids)}  {video_id}  loss={loss:.4f}")
+                if vi % log_every == 0 or vi == len(vids) - 1:
+                    print(
+                        f"epoch {epoch + 1}/{args.epochs}  video {vi + 1}/{len(vids)}  "
+                        f"{video_id}  loss={loss:.4f}"
+                    )
 
             if not losses:
                 raise SystemExit("No training steps were run (no usable videos/frames).")
-            print(f"epoch {epoch + 1}/{args.epochs}  mean_loss={sum(losses)/len(losses):.4f}  steps={len(losses)}")
+            print(
+                f"epoch {epoch + 1}/{args.epochs}  mean_loss={sum(losses)/len(losses):.4f}  "
+                f"steps={len(losses)}  skipped_no_frames={skipped_no_frames}  "
+                f"skipped_empty_target={skipped_empty_target}"
+            )
 
         out_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
         save_vidvrd_train_checkpoint(
