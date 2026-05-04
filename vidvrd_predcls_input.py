@@ -185,8 +185,17 @@ def build_sttran_nodes_from_vidvrd_frames(
             offset += 1
         tid_to_local_idx.append(local_map)
 
-    boxes = torch.tensor(boxes_rows, dtype=torch.float32)
-    labels = torch.tensor(labels_rows, dtype=torch.int64)
+    # If a video/frame chunk has no boxes at all, keep tensor ranks stable.
+    # `torch.tensor([])` would create shape (0,), which breaks downstream `boxes[:, 1:]`.
+    if len(boxes_rows) == 0:
+        boxes = torch.zeros((0, 5), dtype=torch.float32)
+    else:
+        boxes = torch.tensor(boxes_rows, dtype=torch.float32)
+
+    if len(labels_rows) == 0:
+        labels = torch.zeros((0,), dtype=torch.int64)
+    else:
+        labels = torch.tensor(labels_rows, dtype=torch.int64)
     return boxes, labels, frame_offsets, tid_to_local_idx
 
 
@@ -291,9 +300,20 @@ def add_sampled_negatives(
             im_rows.append(float(f))
             tgt_rows.append(int(pred_bg_id))
 
-    pair_idx = torch.tensor(pair_rows, dtype=torch.int64)
-    im_idx = torch.tensor(im_rows, dtype=torch.float32)
-    pred_target = torch.tensor(tgt_rows, dtype=torch.int64)
+    if len(pair_rows) == 0:
+        pair_idx = torch.zeros((0, 2), dtype=torch.int64)
+    else:
+        pair_idx = torch.tensor(pair_rows, dtype=torch.int64)
+
+    if len(im_rows) == 0:
+        im_idx = torch.zeros((0,), dtype=torch.float32)
+    else:
+        im_idx = torch.tensor(im_rows, dtype=torch.float32)
+
+    if len(tgt_rows) == 0:
+        pred_target = torch.zeros((0,), dtype=torch.int64)
+    else:
+        pred_target = torch.tensor(tgt_rows, dtype=torch.int64)
     return pair_idx, im_idx, pred_target
 
 
