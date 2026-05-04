@@ -3,10 +3,16 @@ import torch
 from torch import nn
 from torch.nn.modules.utils import _pair
 
+# Always import TorchVision op as a safe fallback.
+from torchvision.ops import roi_align as _tv_roi_align
+
+_HAS_C = False
 try:
     from fasterRCNN.lib.model import _C  # type: ignore
     from torch.autograd import Function
     from torch.autograd.function import once_differentiable
+
+    _HAS_C = True
 
     class _ROIAlign(Function):
         @staticmethod
@@ -16,13 +22,15 @@ try:
             ctx.spatial_scale = spatial_scale
             ctx.sampling_ratio = sampling_ratio
             ctx.input_shape = input.size()
-            output = _C.roi_align_forward(input, roi, spatial_scale, output_size[0], output_size[1], sampling_ratio)
+            output = _C.roi_align_forward(
+                input, roi, spatial_scale, output_size[0], output_size[1], sampling_ratio
+            )
             return output
 
         @staticmethod
         @once_differentiable
         def backward(ctx, grad_output):
-            rois, = ctx.saved_tensors
+            (rois,) = ctx.saved_tensors
             output_size = ctx.output_size
             spatial_scale = ctx.spatial_scale
             sampling_ratio = ctx.sampling_ratio
@@ -41,20 +49,28 @@ try:
             )
             return grad_input, None, None, None, None
 
-    roi_align = _ROIAlign.apply
+    _roi_align_c = _ROIAlign.apply
 except Exception:
-    from torchvision.ops import roi_align as _tv_roi_align
+    _HAS_C = False
+    _roi_align_c = None  # type: ignore
 
-    def roi_align(input, roi, output_size, spatial_scale, sampling_ratio):
-        # TorchVision expects rois as (K,5) with batch_idx first.
-        return _tv_roi_align(
-            input,
-            roi,
-            output_size=_pair(output_size),
-            spatial_scale=spatial_scale,
-            sampling_ratio=sampling_ratio,
-            aligned=True,
-        )
+
+def roi_align(input, roi, output_size, spatial_scale, sampling_ratio):
+    """
+    Robust ROIAlign:
+    - If the vendored C++/CUDA op exists *and* tensors are CUDA, use it.
+    - Otherwise fall back to TorchVision's roi_align (works on CPU and CUDA).
+    """
+    if _HAS_C and input.is_cuda and roi.is_cuda:
+        return _roi_align_c(input, roi, output_size, spatial_scale, sampling_ratio)  # type: ignore[misc]
+    return _tv_roi_align(
+        input,
+        roi,
+        output_size=_pair(output_size),
+        spatial_scale=spatial_scale,
+        sampling_ratio=sampling_ratio,
+        aligned=True,
+    )
 
 
 class ROIAlign(nn.Module):
