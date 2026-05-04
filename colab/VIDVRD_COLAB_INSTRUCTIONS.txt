@@ -1,0 +1,178 @@
+VIDVRD + STTran (VIDVRD head) — Colab instructions
+===============================================
+
+Goal
+----
+Run the VIDVRD pipeline (raw frames + JSON) → STTran input tensors → train only the VIDVRD head.
+
+Assumptions / what you need
+---------------------------
+1) Repo
+   - You will clone THIS repo (STTran).
+
+2) External dataset (NOT in git)
+   - VIDVRD-DATASET_480 folder (unzipped) with a structure like:
+
+       VIDVRD-DATASET_480/
+         train_frames_480/<VIDEO_ID>/*.jpg (or .png)
+         train_480/<VIDEO_ID>.json
+         test_frames_480/<VIDEO_ID>/*.jpg
+         test_480/<VIDEO_ID>.json
+
+   - The JSON per-video schema is the one you described (video_id, trajectories, relation_instances, etc).
+
+3) Non-git artifacts that must exist inside the repo (or be provided via env vars)
+   - Faster R-CNN weights:
+       STTran/fasterRCNN/models/faster_rcnn_ag.pth
+     Override with env: FASTER_RCNN_AG_PTH=/abs/path/to/faster_rcnn_ag.pth
+
+   - (Optional but recommended) STTran Action Genome pretrained checkpoint (used as backbone init):
+       STTran/ckpts/sttran_predcls.tar
+     Override with env: STTRAN_CKPT=/abs/path/to/sttran_predcls.tar
+
+   - GloVe file (downloaded by setup):
+       STTran/data/glove.6B.200d.txt
+
+4) Output location
+   - Prefer writing checkpoints/logs to Drive:
+       /content/drive/MyDrive/vidvrd_runs/<exp_name>/
+
+
+Colab: recommended cell-by-cell workflow
+---------------------------------------
+
+CELL 0 — Mount Drive
+  from google.colab import drive
+  drive.mount("/content/drive")
+
+
+CELL 1 — Clone repo
+  %cd /content
+  !rm -rf STTran
+  !git clone <YOUR_GITHUB_REPO_URL> STTran
+  %cd /content/STTran
+
+
+CELL 2 — One-shot setup (deps + weights + glove)
+This repo includes `setup_colab.py` to standardize Colab setup.
+
+  %cd /content/STTran
+  !python setup_colab.py --colab
+
+Notes:
+  - On Colab, `setup_colab.py --colab` avoids compiling the legacy Faster R-CNN CUDA extension.
+  - If you already have the weights somewhere else, you can skip linking/copying and instead set env vars.
+  - See `REQUIRED_ARTIFACTS.txt` for the full list of artifacts and override env vars.
+
+
+CELL 3 — Put VIDVRD data in Drive and unzip
+Put your zip in:
+  /content/drive/MyDrive/VIDVRD/VIDVRD-DATASET_480.zip
+
+Then:
+  !mkdir -p "/content/drive/MyDrive/VIDVRD"
+  !unzip -q "/content/drive/MyDrive/VIDVRD/VIDVRD-DATASET_480.zip" -d "/content/drive/MyDrive/VIDVRD"
+
+Now your dataset root should be:
+  /content/drive/MyDrive/VIDVRD/VIDVRD-DATASET_480
+
+If you already have an unzipped folder, skip this step.
+
+
+CELL 4 — Pre-flight validation (IMPORTANT)
+This checks:
+  - dataset layout
+  - frame existence + sizes (you can require 480,854)
+  - JSON schema sanity
+  - preprocessing + feature extraction path
+  - tensor shapes/types produced for training
+  - optionally: loading a checkpoint + forward pass (unless you pass --no_forward)
+
+Example (layout validation + pipeline build for one video):
+
+  %cd /content/STTran
+  !python lib/vidvrd_pipeline_validate.py \
+      --dataset_zip "/content/drive/MyDrive/VIDVRD/VIDVRD-DATASET_480.zip" \
+      --video_id "ILSVRC2015_train_00010001" \
+      --expected_hw "480,854" \
+      --max_frames 32
+
+If you want to skip loading STTran ckpt + forward (debugging only):
+
+  !python lib/vidvrd_pipeline_validate.py \
+      --dataset_zip "/content/drive/MyDrive/VIDVRD/VIDVRD-DATASET_480.zip" \
+      --video_id "ILSVRC2015_train_00010001" \
+      --expected_hw "480,854" \
+      --max_frames 32 \
+      --no_forward
+
+
+CELL 5 — Smoke-test the training code (synthetic mode)
+This verifies:
+  - the model builds
+  - optimizer + loss + checkpoint save work
+It does NOT validate the VIDVRD JSON/frames pipeline (CELL 4 does that).
+
+  %cd /content/STTran
+  !python colab/vidvrd_train_colab.py \
+      --out_dir "/content/drive/MyDrive/vidvrd_runs/smoke_synth" \
+      --epochs 1 \
+      --synthetic
+
+
+CELL 6 — Real training (VIDVRD data)
+You will need to plug in a real dataloader (iterate video_ids, load frames/json, build an entry).
+
+The intended “single source of truth” for how a VIDVRD sample becomes model tensors is:
+  lib.vidvrd_train_utils.build_training_batch_from_vidvrd(...)
+
+And the intended per-step calls are:
+  lib.vidvrd_train_utils.train_step_vidvrd(...)
+
+The skeleton in `colab/vidvrd_train_colab.py` already shows where these go (see TODO markers).
+
+Practical suggestion for your first real run:
+  - Start with a tiny list of 1–3 videos
+  - Use max_frames <= 32
+  - Save checkpoints frequently
+
+
+Where weights/checkpoints go (recommended)
+----------------------------------------
+Keep “base” AG weights separate from your VIDVRD training outputs:
+
+1) Base weights (read-only, used for init):
+   - Faster R-CNN: STTran/fasterRCNN/models/faster_rcnn_ag.pth
+   - STTran AG checkpoint: STTran/ckpts/sttran_predcls.tar (or other mode)
+
+2) VIDVRD run outputs (write to Drive):
+   - /content/drive/MyDrive/vidvrd_runs/<exp_name>/
+     - checkpoints saved by the training script
+
+This repo also includes `lib/vidvrd_checkpoint.py` to support:
+  - saving “full” multitask weights, or
+  - saving “head_only” weights for just the VIDVRD head
+
+
+Common overrides (environment variables)
+---------------------------------------
+If you keep big files outside the repo, set:
+  - FASTER_RCNN_AG_PTH=/abs/path/to/faster_rcnn_ag.pth
+  - STTRAN_CKPT=/abs/path/to/sttran_predcls.tar  (or another ckpt)
+
+Then run the scripts normally; they’ll use the env var paths.
+
+
+If something fails
+------------------
+1) Re-run CELL 4 first. It is the fastest way to pinpoint:
+   - missing frames
+   - wrong folder layout
+   - frame size mismatch
+   - JSON schema mismatches
+   - tensor shape/type mismatches
+
+2) If the error is about missing weights:
+   - check `REQUIRED_ARTIFACTS.txt` for the exact expected paths
+   - or set the env vars above
+

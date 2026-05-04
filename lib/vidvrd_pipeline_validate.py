@@ -14,8 +14,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+# Make imports robust in notebooks/Colab even if cwd is not the repo root.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import numpy as np
 import torch
@@ -468,10 +474,45 @@ def validate_vidvrd_dataset_layout(
 if __name__ == "__main__":
     import argparse
     import sys
+    import zipfile
+    from pathlib import Path
 
     _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     if _root not in sys.path:
         sys.path.insert(0, _root)
+
+    def _maybe_unzip_dataset(dataset_root: str, dataset_zip: str) -> str:
+        """
+        Return a usable dataset root.
+
+        - If ``dataset_root`` is non-empty, return it unchanged.
+        - If ``dataset_root`` is empty and ``dataset_zip`` is set, unzip it locally and return
+          the extracted folder (prefers an inner ``VIDVRD-DATASET_480/`` if present).
+        """
+        if dataset_root:
+            return dataset_root
+        if not dataset_zip:
+            return ""
+
+        zpath = Path(dataset_zip).expanduser()
+        if not zpath.is_file():
+            raise SystemExit(f"--dataset_zip not found: {str(zpath)!r}")
+
+        base = Path("/content") if Path("/content").is_dir() else Path("/tmp")
+        out_base = base / "vidvrd_unzipped"
+        out_base.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(str(zpath), "r") as zf:
+            zf.extractall(str(out_base))
+
+        # If a single top-level directory exists, use it.
+        top_dirs = [p for p in out_base.iterdir() if p.is_dir()]
+        extracted_root = top_dirs[0] if len(top_dirs) == 1 else out_base
+
+        inner = extracted_root / "VIDVRD-DATASET_480"
+        if inner.is_dir():
+            return str(inner)
+        return str(extracted_root)
 
     p = argparse.ArgumentParser(
         description="Validate VIDVRD JSON + frames → training tensors (same path as training)."
@@ -484,6 +525,12 @@ if __name__ == "__main__":
         default="",
         help="If set, use test_frames_480/<video_id> and test_480/<video_id>.json under this root",
     )
+    p.add_argument(
+        "--dataset_zip",
+        type=str,
+        default="",
+        help="If set (and dataset_root is empty), unzip this VIDVRD dataset zip and use it.",
+    )
     p.add_argument("--video_id", type=str, default="ILSVRC2015_train_00010001")
     p.add_argument("--expected_hw", type=str, default="", help="Optional H,W e.g. 480,854")
     p.add_argument("--max_frames", type=int, default=32)
@@ -495,9 +542,11 @@ if __name__ == "__main__":
         a, b = args.expected_hw.split(",")
         exp = (int(a.strip()), int(b.strip()))
 
-    if args.dataset_root:
+    dataset_root = _maybe_unzip_dataset(args.dataset_root, args.dataset_zip)
+
+    if dataset_root:
         r = validate_vidvrd_dataset_layout(
-            args.dataset_root,
+            dataset_root,
             video_id=args.video_id,
             expected_hw=exp,
             max_frames=args.max_frames,
@@ -505,7 +554,7 @@ if __name__ == "__main__":
         )
     else:
         if not args.json or not args.frames_dir:
-            raise SystemExit("Provide --json and --frames_dir, or --dataset_root")
+            raise SystemExit("Provide --json and --frames_dir, or --dataset_root/--dataset_zip")
         r = validate_vidvrd_sample_pipeline(
             json_path=args.json,
             frames_dir=args.frames_dir,

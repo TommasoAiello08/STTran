@@ -31,6 +31,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import zipfile
+from pathlib import Path
 
 import torch
 
@@ -104,6 +106,18 @@ def main() -> None:
         required=True,
         help="Where to write backups + finetuned weights (e.g. Drive folder).",
     )
+    ap.add_argument(
+        "--dataset_root",
+        type=str,
+        default="",
+        help="(Optional) Unzipped VIDVRD-DATASET_480 root. Not used in --synthetic mode.",
+    )
+    ap.add_argument(
+        "--dataset_zip",
+        type=str,
+        default="",
+        help="(Optional) VIDVRD dataset zip. If set and dataset_root is empty, it is unzipped locally.",
+    )
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--num_predicates", type=int, default=132)
@@ -131,6 +145,23 @@ def main() -> None:
     backup_dir = os.path.join(args.out_dir, "backups")
     ckpt_dir = os.path.join(args.out_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
+
+    # Optional convenience: if the user provides a VIDVRD zip, unzip it once so non-synthetic
+    # training implementations can rely on a local folder.
+    dataset_root = args.dataset_root
+    if (not dataset_root) and args.dataset_zip:
+        zpath = Path(args.dataset_zip).expanduser()
+        if not zpath.is_file():
+            raise SystemExit(f"--dataset_zip not found: {str(zpath)!r}")
+        base = Path("/content") if Path("/content").is_dir() else Path("/tmp")
+        out_base = base / "vidvrd_unzipped"
+        out_base.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(str(zpath), "r") as zf:
+            zf.extractall(str(out_base))
+        top_dirs = [p for p in out_base.iterdir() if p.is_dir()]
+        extracted_root = top_dirs[0] if len(top_dirs) == 1 else out_base
+        inner = extracted_root / "VIDVRD-DATASET_480"
+        dataset_root = str(inner if inner.is_dir() else extracted_root)
 
     # 1) Preserve original base weights next to run outputs (and optional in-repo copy).
     if os.path.isfile(args.base_ckpt):
@@ -181,7 +212,8 @@ def main() -> None:
             # Same inputs as run_vidvrd_json_demo.py (detector + featurizer + JSON + frames).
             raise SystemExit(
                 "Non-synthetic mode is a stub: pass --synthetic for smoke test, or implement "
-                "the dataloader loop above (use build_training_batch_from_vidvrd)."
+                "the dataloader loop above (use build_training_batch_from_vidvrd). "
+                f"(dataset_root={dataset_root!r})"
             )
 
         out_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
