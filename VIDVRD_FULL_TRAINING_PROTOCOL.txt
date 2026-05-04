@@ -1,0 +1,281 @@
+VIDVRD fine-tuning on STTran (full training protocol)
+====================================================
+
+This document is a practical “how to train for real” guide for your Colab/medium-GPU setup.
+It is written for the **VIDVRD predicate head** path you implemented (predcls-style tensors +
+Faster R-CNN backbone features + STTran trunk + a separate VIDVRD linear head).
+
+If you only need file inventory / downloads, see REQUIRED_ARTIFACTS.txt.
+If you only need tensor contracts, see VIDVRD_STTRAN_PIPELINE.txt.
+
+
+0) What you are actually training (scope)
+----------------------------------------
+You are **not** re-training Action Genome from scratch.
+
+You start from:
+  - Faster R-CNN weights trained on AG (detector backbone)
+  - STTran predcls weights on AG (transformer trunk + AG readouts)
+
+You then fine-tune for VIDVRD by training primarily:
+  - vidvrd_head (recommended default)
+optionally later:
+  - STTran trunk (higher risk of forgetting AG / hurting generalization)
+
+This is the same *family* of transfer learning as “freeze backbone, train head” in vision.
+
+
+1) Action Genome scale (why 100 epochs can be OK, but not blindly)
+-------------------------------------------------------------------
+Action Genome is large relative to a single-video Colab debug loop, but your VIDVRD setup is
+different:
+
+  - You are not iterating the full AG dataloader here.
+  - Your effective “dataset size” is the number of usable (video, time-window) batches you can
+    construct where:
+      * there are enough tracked objects per frame to form pairs
+      * relations exist in the window (or at least negatives exist)
+
+**Important:** “100 epochs” only makes sense if each epoch covers enough unique supervision.
+If each epoch only sees 1–2 videos, 100 epochs can simply **overfit** those videos.
+
+Recommended interpretation:
+  - Use “epochs” as **passes over the full training split** (or a large fixed subset),
+    not “passes over 1 debug video”.
+
+If you want a Colab-friendly analogue to “100 epochs on AG”, define:
+  - N_train_videos (or full train split)
+  - T_window (frames per sample)
+  - samples_per_epoch ≈ N_train_videos * (num_windows_per_video)
+and ensure each epoch updates on many windows.
+
+
+2) What STTran / this repo considers “normal” optimization (AG)
+--------------------------------------------------------------
+This repository’s baseline STTran training entrypoint is deprecated in train.py, but it still
+documents the intended baseline defaults in lib/config.py:
+
+  - default lr: 1e-5
+  - default nepoch: 10
+  - default optimizer option: adamw (also adam/sgd supported)
+
+That is a reasonable “small LR fine-tuning” scale for transformer-ish models.
+
+Separately, this repo also vendors the APT (anticipatory) pipeline configs that mirror the
+CVPR’22 APT paper settings (see configs/apt_pretrain.yaml and configs/apt_finetune.yaml):
+
+Pretrain (paper):
+  - SGD, lr=1e-3, momentum=0.9, lr_decay=0.9 per epoch, batch_size=16, grad_clip=5.0
+  - frame_sampling_rate: 1 frame every 3 frames
+
+Finetune (paper):
+  - SGD, lr=1e-5, momentum=0.9, lr_decay=0.9 per epoch, batch_size=16, grad_clip=5.0
+
+This is useful as a reference for “domain transfer within AG” (pretrain → finetune):
+**small LR + per-epoch decay + grad clipping**.
+
+Your VIDVRD head training is closer to “finetune stage” than “pretrain stage”, but you are
+transferring across datasets (AG → VIDVRD), so treat it like finetune: **conservative LR**.
+
+
+3) Negative sampling: should you do it? how much?
+-------------------------------------------------
+Yes, for predicate classification with a background class, negatives are standard.
+
+In your pipeline, negatives are sampled in vidvrd_predcls_input.add_sampled_negatives with:
+  - neg_ratio (roughly negatives per positive per frame, capped by available pairs)
+
+Recommendations:
+  A) Start moderate: neg_ratio = 2 or 3
+     - This matches your current default (3) and is a good first setting.
+
+  B) If training is unstable (loss spikes) or GPU memory is tight:
+     - reduce neg_ratio to 1–2
+
+  C) If the model collapses to predicting background always:
+     - increase neg_ratio slowly (3 → 4 → 6), OR
+     - use class-balanced sampling / focal loss (not implemented in your current CE loss)
+
+  D) If positives are extremely rare in a window:
+     - your batch can become tiny or empty; fix DATA first (windowing / frame_start search)
+       before tuning neg_ratio.
+
+**Critical:** negatives require at least 2 nodes in a frame to form directed pairs.
+If many frames have 0–1 boxes, negatives disappear → pred_target can be empty.
+
+
+4) Initialization strategy (what should be “good” hyperparameters)
+------------------------------------------------------------------
+Below is a tiered schedule that tends to work well for “pretrained trunk + new head”.
+
+4.1 Freezing policy (recommended progression)
+  Phase A (stability): freeze Faster R-CNN + freeze STTran trunk + train only vidvrd_head
+    - lr_head: 1e-3 to 3e-4 (AdamW)
+    - short phase: 5–20 epochs OR until validation metric plateaus
+
+  Phase B (optional, only if needed): unfreeze STTran trunk, keep AG readouts frozen
+    - use parameter groups:
+        trunk lr: 1e-5 to 3e-5
+        head lr: 1e-4 (or reduce head lr if unstable)
+    - strong regularization: weight decay 1e-4 to 1e-2 (start small)
+
+  Phase C (rarely needed): unfreeze AG readouts (usually NOT for VIDVRD)
+
+4.2 Optimizer choice
+  - AdamW is a good default for transformer fine-tuning in practice.
+  - If you want to mimic APT finetune configs more literally, SGD+momentum works but is
+    pickier; AdamW is usually easier on medium GPUs.
+
+Suggested AdamW defaults:
+  - lr (head-only phase): 1e-3
+  - betas: (0.9, 0.999)
+  - weight_decay: 1e-4 (increase if you see overfitting)
+
+4.3 LR schedule for “100 epochs”
+  Do NOT keep a constant 1e-3 for 100 epochs on the head unless you are clearly underfitting.
+
+  Recommended:
+    - Warmup: 1–2 epochs linear warmup from 0 → lr_max (optional but helps stability)
+    - Cosine decay to ~0.1 * lr_max by the end
+    OR
+    - Step decay: multiply lr by 0.5–0.9 every 10–20 epochs when validation plateaus
+
+  Concrete starting point (head-only):
+    - epochs 1–30:   lr = 1e-3
+    - epochs 31–70:  lr = 3e-4
+    - epochs 71–100: lr = 1e-4
+
+  If you add trunk fine-tuning, use a **lower** trunk lr (typically 10×–30× smaller than head).
+
+4.4 Regularization / generalization
+  - Keep negatives moderate (Section 3).
+  - Use early stopping based on validation, not training loss.
+  - Prefer sampling diverse videos each epoch (shuffle train list).
+  - Avoid always training on the same frame_start; randomize window starts per epoch.
+  - Optional: EMA of weights (not implemented here; add if you need extra stability).
+
+4.5 Batch semantics in your current code
+  Your Colab trainer currently does “one video per optimizer step” style loops.
+  True “batch_size=16” like AG training would stack multiple windows; that is more efficient
+  but requires a collate function.
+
+  For medium GPUs, a practical compromise is:
+    - accumulate gradients over K windows (K=2..8) before optimizer.step()
+
+
+5) A full training loop (pseudocode you should implement / mirror)
+------------------------------------------------------------------
+Inputs:
+  - dataset_root=/content/vidvrd-dataset_480
+  - vocab_json=/content/vidvrd_vocab.json  (stable object/predicate ids)
+  - split train/test
+  - list of train video_ids (optionally shuffle each epoch)
+
+Models:
+  - detector = detector(...).eval()  (usually frozen)
+  - featurizer = VidvrdPredclsFeaturizer(detector.fasterRCNN).train()/eval() depending policy
+  - multi = STTranMultiHead(sttran, num_vidvrd_predicates=P).to(device)
+  - load AG predcls weights into sttran
+  - freeze policy per phase
+
+Training step (same as your validated path):
+  - load JSON
+  - choose frame_start (random or heuristic), load T frames
+  - build im_data/im_info (same preprocessing as validator)
+  - entry, pred_target, skipped = build_training_batch_from_vidvrd(...)
+  - if pred_target.numel() == 0: skip step (or resample window)
+
+  - loss = CrossEntropy(vidvrd_logits, pred_target)
+  - backward + clip_grad_norm_(trainable_params, max_norm=5.0)  # APT uses 5.0; good default
+  - optimizer.step()
+
+Validation (each epoch or every N epochs):
+  - run the same builder on a fixed small validation set
+  - track:
+      * mean CE loss
+      * accuracy ignoring background (optional)
+      * per-class recall for rare predicates (if you implement metrics)
+  - save best checkpoint by validation metric (not train loss)
+
+Checkpointing:
+  - save full multitask weights AND/OR head-only weights (see lib/vidvrd_checkpoint.py)
+  - always keep immutable copies of base AG weights separately from finetuned runs
+
+
+6) “100 epochs” plan that is realistic on medium compute
+--------------------------------------------------------
+Define:
+  - E = 100
+  - evaluate every Ev = 1 epoch early; later Ev = 2–5 if too slow
+  - head-only for first 30–50 epochs unless validation stalls
+
+Compute budgeting:
+  - largest cost is Faster R-CNN backbone forward on T frames per step
+  - start with T=8..16 for debugging; move to T=32 when stable
+  - increase videos/epoch gradually
+
+Overfitting control:
+  - if train loss keeps dropping but validation worsens: stop / reduce lr / freeze trunk again
+
+
+7) How this relates to “fine tuning in other domains” (what to copy)
+--------------------------------------------------------------------
+Across domains, the stable recipe is almost always:
+  1) keep pretrained visual backbone frozen initially
+  2) train task head with moderate LR
+  3) only then optionally unfreeze deeper layers with much smaller LR
+  4) use conservative schedules + early stopping
+
+Your repo’s APT finetune config is an explicit instance of (small LR + decay + grad clip) for a
+second stage on the same dataset family (AG). VIDVRD is harder because it shifts label space;
+therefore **do not** jump to aggressive trunk fine-tuning early.
+
+
+8) Operational checklist before long runs
+-----------------------------------------
+  - vocab_json matches training split scan (objects + predicates)
+  - verify non-empty pred_target on a random sample of videos/windows
+  - run validator with --no_forward then full forward periodically
+  - ensure checkpoints go to Drive (persistent)
+
+
+9) Suggested initial hyperparameter table (start here)
+------------------------------------------------------
+Phase A (head-only, recommended first real run):
+  - optimizer: AdamW
+  - lr_head: 1e-3
+  - weight_decay: 1e-4
+  - neg_ratio: 3
+  - max_frames (T): 16 (then 32)
+  - grad_clip: 5.0
+  - epochs: 100 with piecewise LR decay (Section 4.3)
+
+Phase B (optional trunk FT):
+  - lr_trunk: 2e-5
+  - lr_head: 3e-4
+  - weight_decay: 1e-4
+  - neg_ratio: 2–3
+  - grad_clip: 5.0
+
+
+10) Notes on dataset size references (online / literature)
+---------------------------------------------------------
+Public references commonly cite Action Genome as a large video scene graph benchmark (tens of
+thousands of clips / long total runtime). Exact numbers vary by version/split; treat AG as
+“large-scale pretraining”, VIDVRD as “smaller / different label space transfer”.
+
+STTran (ICCV 2021) is the baseline reference for the STTran architecture; your fork extends it
+with multitask heads and Colab tooling. For optimization culture in this fork, prefer:
+  - lib/config.py defaults (lr=1e-5, nepoch=10) as “small LR fine-tune” intuition
+  - configs/apt_finetune.yaml (lr=1e-5, step decay, grad clip) as “second-stage finetune” intuition
+
+
+11) What you should implement next (engineering)
+-----------------------------------------------
+To scale beyond Colab debug loops, implement a proper Dataset/DataLoader that returns:
+  (vidvrd_json, frame_start, T, video_id)
+
+and collate/stack windows if you want true batching.
+
+This is the main missing piece between “works on one window” and “100-epoch full training”.
+

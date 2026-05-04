@@ -29,6 +29,7 @@ Policy: AG readout layers are **not** trained; only ``vidvrd_head`` by default (
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import zipfile
@@ -43,10 +44,12 @@ if _REPO_ROOT not in sys.path:
 
 from lib.ag_bootstrap import load_ag_label_bundle
 from lib.sttran import STTran
+from lib.vidvrd_mock_featurizer import VidvrdMockFeaturizer
 from lib.vidvrd_checkpoint import backup_file, save_vidvrd_train_checkpoint
 from lib.vidvrd_train_utils import (
     default_backup_dir,
     default_base_ckpt_path,
+    build_training_batch_from_vidvrd,
     freeze_for_vidvrd_training,
     make_synthetic_vidvrd_entry,
     train_step_vidvrd,
@@ -63,7 +66,9 @@ def _pick_device() -> torch.device:
     return torch.device("cpu")
 
 
-def _build_model(device: torch.device, base_ckpt: str, num_predicates: int) -> STTranMultiHead:
+def _build_model(
+    device: torch.device, base_ckpt: str, num_predicates: int, *, random_init: bool = False
+) -> STTranMultiHead:
     (
         object_classes,
         _rc,
@@ -82,14 +87,34 @@ def _build_model(device: torch.device, base_ckpt: str, num_predicates: int) -> S
         dec_layer_num=3,
     ).to(device)
 
-    try:
-        ckpt = torch.load(base_ckpt, map_location=device, weights_only=False)
-    except TypeError:
-        ckpt = torch.load(base_ckpt, map_location=device)
-    sttran.load_state_dict(ckpt["state_dict"], strict=False)
+    if not random_init:
+        try:
+            ckpt = torch.load(base_ckpt, map_location=device, weights_only=False)
+        except TypeError:
+            ckpt = torch.load(base_ckpt, map_location=device)
+        sttran.load_state_dict(ckpt["state_dict"], strict=False)
 
     multi = STTranMultiHead(sttran, num_vidvrd_predicates=num_predicates).to(device)
     return multi
+
+
+def _load_vocab(vocab_json_path: str) -> tuple[dict[str, int], dict[str, int], int]:
+    v = json.loads(Path(vocab_json_path).read_text(encoding="utf-8"))
+    from vidvrd_predcls_input import build_vidvrd_vocab_maps
+
+    obj2id, pred2id = build_vidvrd_vocab_maps(
+        object_categories=list(v["object_categories"]),
+        predicate_names=list(v["predicate_names"]),
+        reserve_background_id0=True,
+    )
+    return obj2id, pred2id, len(pred2id)
+
+
+def _list_video_ids(json_dir: Path) -> list[str]:
+    vids = []
+    for p in sorted(json_dir.glob("*.json")):
+        vids.append(p.stem)
+    return vids
 
 
 def main() -> None:
@@ -118,6 +143,40 @@ def main() -> None:
         default="",
         help="(Optional) VIDVRD dataset zip. If set and dataset_root is empty, it is unzipped locally.",
     )
+    ap.add_argument(
+        "--vocab_json",
+        type=str,
+        default="",
+        help=(
+            "Path to VIDVRD vocab json with keys {object_categories: [...], predicate_names: [...]}. "
+            "Required for non-synthetic training."
+        ),
+    )
+    ap.add_argument(
+        "--split",
+        type=str,
+        choices=("train", "test"),
+        default="train",
+        help="Which VIDVRD split to read from dataset_root.",
+    )
+    ap.add_argument(
+        "--max_videos",
+        type=int,
+        default=2,
+        help="How many videos to iterate (debug runs).",
+    )
+    ap.add_argument(
+        "--max_frames",
+        type=int,
+        default=32,
+        help="Max frames to load per video (speed).",
+    )
+    ap.add_argument(
+        "--neg_ratio",
+        type=int,
+        default=3,
+        help="Negatives per positive (approx) inside build_vidvrd_predcls_entry.",
+    )
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--num_predicates", type=int, default=132)
@@ -125,6 +184,20 @@ def main() -> None:
         "--synthetic",
         action="store_true",
         help="Run a smoke test with random tensors (no VIDVRD zip needed).",
+    )
+    ap.add_argument(
+        "--mock_featurizer",
+        action="store_true",
+        help=(
+            "Non-synthetic only: skip Faster R-CNN (zero ROI features) for a shape-faithful "
+            "JSON→loss loop without detector weights. Implies random STTran init (no base_ckpt)."
+        ),
+    )
+    ap.add_argument(
+        "--frame_start",
+        type=int,
+        default=0,
+        help="First frame index within each video (must align with JSON/windowing).",
     )
     ap.add_argument(
         "--train_sttran_trunk",
@@ -163,18 +236,34 @@ def main() -> None:
         inner = extracted_root / "VIDVRD-DATASET_480"
         dataset_root = str(inner if inner.is_dir() else extracted_root)
 
+    mock_ft = bool(getattr(args, "mock_featurizer", False))
+    random_init = mock_ft
+
     # 1) Preserve original base weights next to run outputs (and optional in-repo copy).
-    if os.path.isfile(args.base_ckpt):
-        backup_file(args.base_ckpt, backup_dir, suffix="_at_train_start")
-        try:
-            backup_file(args.base_ckpt, default_backup_dir(), suffix="_at_train_start")
-        except OSError:
-            pass  # read-only sandboxes / missing Drive bind
-    else:
-        raise SystemExit(f"Base checkpoint not found: {args.base_ckpt!r}")
+    if not random_init:
+        if os.path.isfile(args.base_ckpt):
+            backup_file(args.base_ckpt, backup_dir, suffix="_at_train_start")
+            try:
+                backup_file(args.base_ckpt, default_backup_dir(), suffix="_at_train_start")
+            except OSError:
+                pass  # read-only sandboxes / missing Drive bind
+        else:
+            raise SystemExit(f"Base checkpoint not found: {args.base_ckpt!r}")
 
     # 2) Model
-    multi = _build_model(device, args.base_ckpt, args.num_predicates)
+    num_predicates = int(args.num_predicates)
+    obj2id = None
+    pred2id = None
+    if not args.synthetic:
+        if not dataset_root:
+            raise SystemExit("Non-synthetic training requires --dataset_root (or --dataset_zip).")
+        if not args.vocab_json:
+            raise SystemExit("Non-synthetic training requires --vocab_json (stable VIDVRD vocab).")
+        obj2id, pred2id, num_predicates = _load_vocab(args.vocab_json)
+
+    multi = _build_model(
+        device, args.base_ckpt, num_predicates, random_init=random_init
+    )
     freeze_for_vidvrd_training(
         multi,
         train_vidvrd_head=True,
@@ -202,19 +291,82 @@ def main() -> None:
             )
             print(f"epoch {epoch + 1}/{args.epochs}  synthetic_loss={loss:.4f}")
         else:
-            # Wire your DataLoader to the existing VIDVRD → STTran pipeline:
-            #   from lib.vidvrd_train_utils import build_training_batch_from_vidvrd
-            #   entry, pred_target, _skipped = build_training_batch_from_vidvrd(
-            #       vidvrd_json=..., obj2id=..., pred2id=...,
-            #       im_data=..., im_info=..., featurizer=featurizer, neg_ratio=3, seed=epoch,
-            #   )
-            #   loss = train_step_vidvrd(multi, entry, pred_target, optimizer, device=device)
-            # Same inputs as run_vidvrd_json_demo.py (detector + featurizer + JSON + frames).
-            raise SystemExit(
-                "Non-synthetic mode is a stub: pass --synthetic for smoke test, or implement "
-                "the dataloader loop above (use build_training_batch_from_vidvrd). "
-                f"(dataset_root={dataset_root!r})"
-            )
+            from lib.vidvrd_pipeline_validate import _build_im_data_im_info as _build_im  # reuse exact preprocessing
+
+            split = str(args.split)
+            frames_subdir = f"{split}_frames_480"
+            json_subdir = f"{split}_480"
+            root = Path(dataset_root)
+            json_dir = root / json_subdir
+            vids = _list_video_ids(json_dir)[: max(0, int(args.max_videos))]
+            if not vids:
+                raise SystemExit(f"No videos found under: {str(json_dir)!r}")
+
+            # Build detector/featurizer once per epoch (keeps code simple; you can hoist it outside later).
+            if mock_ft:
+                featurizer = VidvrdMockFeaturizer().to(device)
+                featurizer.eval()
+            else:
+                from lib.object_detector import detector
+                from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+
+                object_classes = load_ag_label_bundle()[0]
+                det = detector(
+                    train=False,
+                    object_classes=object_classes,
+                    use_SUPPLY=True,
+                    mode="predcls",
+                ).to(device)
+                det.eval()
+                featurizer = VidvrdPredclsFeaturizer(det.fasterRCNN, chunk_frames=10).to(device)
+                featurizer.eval()
+
+            losses = []
+            frame_start = max(0, int(args.frame_start))
+            for vi, video_id in enumerate(vids):
+                jp = json_dir / f"{video_id}.json"
+                frames_dir = root / frames_subdir / video_id
+                vidvrd = json.loads(jp.read_text(encoding="utf-8"))
+                frame_files = sorted(
+                    [n for n in os.listdir(frames_dir) if n.lower().endswith((".jpg", ".jpeg", ".png"))]
+                )
+                meta_fc = int(vidvrd.get("frame_count", len(frame_files)))
+                fs = max(
+                    0,
+                    min(frame_start, len(frame_files) - 1, max(0, meta_fc - 1)),
+                )
+                T_use = min(len(frame_files) - fs, meta_fc - fs, int(args.max_frames))
+                if T_use <= 0:
+                    print(f"[skip] no frames: {video_id}")
+                    continue
+
+                im_data, im_info, _scales = _build_im(
+                    str(frames_dir), frame_files, T_use, device, start_idx=fs
+                )
+                entry, pred_target, skipped = build_training_batch_from_vidvrd(
+                    vidvrd_json=vidvrd,
+                    obj2id=obj2id,  # type: ignore[arg-type]
+                    pred2id=pred2id,  # type: ignore[arg-type]
+                    im_data=im_data,
+                    im_info=im_info,
+                    featurizer=featurizer,
+                    neg_ratio=int(args.neg_ratio),
+                    seed=epoch * 1000 + vi,
+                    frame_start=fs,
+                )
+                if skipped:
+                    # keep it short; detailed skip reasons are in the validator
+                    print(f"[warn] {video_id}: skipped_relation_msgs={len(skipped)}")
+                if pred_target.numel() == 0:
+                    print(f"[skip] empty pred_target (no pairs in window): {video_id}")
+                    continue
+                loss = train_step_vidvrd(multi, entry, pred_target, optimizer, device=device)
+                losses.append(loss)
+                print(f"epoch {epoch + 1}/{args.epochs}  video {vi + 1}/{len(vids)}  {video_id}  loss={loss:.4f}")
+
+            if not losses:
+                raise SystemExit("No training steps were run (no usable videos/frames).")
+            print(f"epoch {epoch + 1}/{args.epochs}  mean_loss={sum(losses)/len(losses):.4f}  steps={len(losses)}")
 
         out_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
         save_vidvrd_train_checkpoint(
@@ -224,7 +376,10 @@ def main() -> None:
             extra_meta={
                 "base_ckpt": os.path.abspath(args.base_ckpt),
                 "epoch": epoch + 1,
-                "num_predicates": args.num_predicates,
+                "num_predicates": num_predicates,
+                "split": getattr(args, "split", None),
+                "dataset_root": dataset_root,
+                "vocab_json": args.vocab_json,
             },
         )
         print(f"  saved {out_path} ({args.save_mode})")

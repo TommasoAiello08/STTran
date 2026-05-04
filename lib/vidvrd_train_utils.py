@@ -44,6 +44,7 @@ def build_training_batch_from_vidvrd(
     featurizer: Any,
     neg_ratio: int = 3,
     seed: int = 7,
+    frame_start: int = 0,
 ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, list]:
     """
     Real VIDVRD batch: **same path** as ``run_vidvrd_json_demo.py`` → ``build_vidvrd_predcls_entry``.
@@ -63,6 +64,7 @@ def build_training_batch_from_vidvrd(
         featurizer=featurizer,
         neg_ratio=neg_ratio,
         seed=seed,
+        frame_start=int(frame_start),
     )
 
 

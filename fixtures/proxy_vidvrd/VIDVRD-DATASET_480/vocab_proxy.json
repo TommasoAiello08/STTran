@@ -1,0 +1,9 @@
+{
+  "object_categories": [
+    "cat",
+    "dog"
+  ],
+  "predicate_names": [
+    "near"
+  ]
+}

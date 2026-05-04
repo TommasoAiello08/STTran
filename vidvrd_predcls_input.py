@@ -332,6 +332,7 @@ def build_vidvrd_predcls_entry(
     neg_ratio: int = 3,
     seed: int = 7,
     clamp_boxes_to_image: bool = True,
+    frame_start: int = 0,
 ) -> Tuple[dict, torch.Tensor, List[str]]:
     """
     End-to-end: VIDVRD JSON → STTran `entry` (predcls-style) + predicate targets.
@@ -341,9 +342,34 @@ def build_vidvrd_predcls_entry(
       pred_target: LongTensor[R] with 0 = background if your pred2id uses that convention
       skipped: list of strings describing any skipped relation frames (missing boxes)
     """
-    meta, tid2cat, frames, rel_spans = parse_vidvrd_json_dict(vidvrd_json)
-    T = min(int(meta.frame_count), int(im_data.shape[0]))
-    frames = frames[:T]
+    meta, tid2cat, frames_all, rel_spans_all = parse_vidvrd_json_dict(vidvrd_json)
+    frame_start = int(max(0, frame_start))
+    # `im_data` contains a *window* of frames starting at `frame_start`.
+    T = min(int(meta.frame_count) - frame_start, int(im_data.shape[0]))
+    if T < 0:
+        T = 0
+    frames = frames_all[frame_start : frame_start + T]
+
+    # Shift relation spans into the local [0, T) window.
+    rel_spans: List[VidvrdRelSpan] = []
+    for r in rel_spans_all:
+        b = int(r.begin_fid) - frame_start
+        e = int(r.end_fid) - frame_start
+        if e <= 0 or b >= T:
+            continue
+        b = max(0, b)
+        e = min(T, e)
+        if e <= b:
+            continue
+        rel_spans.append(
+            VidvrdRelSpan(
+                subject_tid=r.subject_tid,
+                object_tid=r.object_tid,
+                predicate=r.predicate,
+                begin_fid=b,
+                end_fid=e,
+            )
+        )
 
     clamp = (int(meta.width), int(meta.height)) if clamp_boxes_to_image else None
     boxes, labels, frame_offsets, tid_to_local_idx = build_sttran_nodes_from_vidvrd_frames(

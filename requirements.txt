@@ -20,6 +20,8 @@ numpy>=1.20
 scipy>=1.6         # dataloader uses legacy scipy.misc.imread when available
 imageio>=2.9       # fallback when scipy.misc.imread is missing (Py>=3.9)
 pillow>=8.0
+opencv-python-headless>=4.5   # ``fasterRCNN.lib.model.utils.blob`` (prep_im_for_blob)
+easydict>=1.7                 # ``fasterRCNN.lib.model.utils.config`` (cfg)
 
 # --- Progress bars / word vectors
 tqdm>=4.60

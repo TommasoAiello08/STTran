@@ -18,20 +18,13 @@ so that dimensions match the pretrained checkpoint expectations.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 
 from lib.object_detector import draw_union_boxes  # same rasterizer used elsewhere
-
-
-@dataclass(frozen=True)
-class FeaturizerOutput:
-    features: torch.Tensor       # [N,2048]
-    union_feat: torch.Tensor     # [R,1024,7,7]
-    spatial_masks: torch.Tensor  # [R,2,27,27]
+from vidvrd_featurizer_types import FeaturizerOutput
 
 
 class VidvrdPredclsFeaturizer(nn.Module):

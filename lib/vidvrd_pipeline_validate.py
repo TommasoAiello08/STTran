@@ -29,11 +29,10 @@ import torch
 
 from fasterRCNN.lib.model.utils.blob import im_list_to_blob, prep_im_for_blob
 from lib.ag_bootstrap import load_ag_label_bundle
-from lib.object_detector import detector
 from lib.repo_paths import resolve_repo_path
 from lib.sttran import STTran
 from sttran_multitask_heads import STTranMultiHead
-from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+from lib.vidvrd_mock_featurizer import VidvrdMockFeaturizer
 from vidvrd_predcls_input import (
     build_vidvrd_predcls_entry,
     build_vidvrd_vocab_maps,
@@ -86,6 +85,7 @@ def _build_im_data_im_info(
     frame_files: Sequence[str],
     T_use: int,
     device: torch.device,
+    start_idx: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor, List[float]]:
     """
     Match ``dataloader.action_genome.AG`` preprocessing: BGR, mean-subtract, min-side 600.
@@ -97,7 +97,7 @@ def _build_im_data_im_info(
     processed: List[np.ndarray] = []
     scales: List[float] = []
     for i in range(T_use):
-        path = os.path.join(frames_dir, frame_files[i])
+        path = os.path.join(frames_dir, frame_files[int(start_idx) + i])
         im = imageio.imread(path)
         if im.ndim != 3 or im.shape[2] < 3:
             raise ValueError(f"Bad image shape {im.shape} at {path!r}")
@@ -178,11 +178,13 @@ def validate_vidvrd_sample_pipeline(
     predicate_names: Optional[Sequence[str]] = None,
     num_vidvrd_predicates: Optional[int] = 132,
     max_frames: Optional[int] = 32,
+    frame_start: int = 0,
     neg_ratio: int = 3,
     seed: int = 7,
     base_ckpt_path: Optional[str] = None,
     run_forward: bool = True,
     debug_trace: bool = False,
+    mock_featurizer: bool = False,
 ) -> VidvrdPipelineValidationResult:
     """
     Validate one video: JSON + folder of frames → ``entry`` / ``pred_target`` + optional forward.
@@ -202,6 +204,9 @@ def validate_vidvrd_sample_pipeline(
         base_ckpt_path: STTran predcls ``.tar`` for dry-run forward; default repo path.
         run_forward: If False, skip STTran load + ``head="vidvrd"`` forward (faster if
             weights missing).
+        mock_featurizer: If True, skip Faster R-CNN and use :class:`lib.vidvrd_mock_featurizer.VidvrdMockFeaturizer`
+            (shape-only). Forward uses a **randomly initialized** STTran (no checkpoint) to
+            verify logits shapes when ``run_forward`` is True.
 
     Returns:
         ``VidvrdPipelineValidationResult`` with ``ok``, ``errors``, ``warnings``, and
@@ -253,18 +258,20 @@ def validate_vidvrd_sample_pipeline(
 
     T_disk = len(frame_files)
     T_json = int(meta.frame_count)
-    T_use = min(T_disk, T_json)
+    frame_start = int(max(0, min(int(frame_start), max(0, T_disk - 1))))
+    T_use = min(T_disk - frame_start, T_json - frame_start)
     if max_frames is not None:
         T_use = min(T_use, int(max_frames))
     out.diagnostics["T_use"] = T_use
     out.diagnostics["T_disk"] = T_disk
+    out.diagnostics["frame_start"] = frame_start
 
     if T_use == 0:
         out.errors.append("T_use is 0 (no frames to process)")
         return out
 
     # --- Resolution / annotation space ------------------------------------------
-    first_path = os.path.join(frames_dir, frame_files[0])
+    first_path = os.path.join(frames_dir, frame_files[frame_start])
     try:
         h0, w0 = _load_raw_hw(first_path)
     except Exception as e:
@@ -289,7 +296,7 @@ def validate_vidvrd_sample_pipeline(
     # Spot-check more frames (up to 8) for same size
     step = max(1, T_use // 8)
     for i in range(0, T_use, step):
-        p = os.path.join(frames_dir, frame_files[i])
+        p = os.path.join(frames_dir, frame_files[frame_start + i])
         h, w = _load_raw_hw(p)
         if (h, w) != (h0, w0):
             out.errors.append(f"Inconsistent frame size at {p!r}: ({h},{w}) vs ({h0},{w0})")
@@ -330,7 +337,9 @@ def validate_vidvrd_sample_pipeline(
 
     # --- Images → im_data / im_info (same path as AG loader) -------------------
     try:
-        im_data, im_info, scales = _build_im_data_im_info(frames_dir, frame_files, T_use, dev)
+        im_data, im_info, scales = _build_im_data_im_info(
+            frames_dir, frame_files, T_use, dev, start_idx=frame_start
+        )
     except Exception as e:
         out.errors.append(f"image preprocessing failed: {e}")
         return out
@@ -340,6 +349,10 @@ def validate_vidvrd_sample_pipeline(
     out.diagnostics["prep_scales_first8"] = scales[:8]
 
     # --- Detector + featurizer (same as demo / training) -----------------------
+    object_classes: List[str]
+    attention_relationships: List[str]
+    spatial_relationships: List[str]
+    contacting_relationships: List[str]
     try:
         (
             object_classes,
@@ -348,18 +361,36 @@ def validate_vidvrd_sample_pipeline(
             spatial_relationships,
             contacting_relationships,
         ) = load_ag_label_bundle()
-        det = detector(
-            train=False,
-            object_classes=object_classes,
-            use_SUPPLY=True,
-            mode="predcls",
-        ).to(dev)
-        det.eval()
-        featurizer = VidvrdPredclsFeaturizer(det.fasterRCNN, chunk_frames=10).to(dev)
-        featurizer.eval()
     except Exception as e:
-        out.errors.append(f"detector/featurizer init failed (weights missing?): {e}")
+        out.errors.append(f"load_ag_label_bundle failed: {e}")
         return out
+
+    if mock_featurizer:
+        featurizer = VidvrdMockFeaturizer().to(dev)
+        featurizer.eval()
+        out.warnings.append(
+            "mock_featurizer=True: skipping Faster R-CNN; features are zeros (shape check only)."
+        )
+    else:
+        try:
+            from lib.object_detector import detector
+            from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+
+            det = detector(
+                train=False,
+                object_classes=object_classes,
+                use_SUPPLY=True,
+                mode="predcls",
+            ).to(dev)
+            det.eval()
+            featurizer = VidvrdPredclsFeaturizer(det.fasterRCNN, chunk_frames=10).to(dev)
+            featurizer.eval()
+        except Exception as e:
+            out.errors.append(
+                f"detector/featurizer init failed (weights missing?). "
+                f"Retry with --mock_featurizer. Detail: {e}"
+            )
+            return out
 
     # --- Same function as training ---------------------------------------------
     try:
@@ -372,6 +403,7 @@ def validate_vidvrd_sample_pipeline(
             featurizer=featurizer,
             neg_ratio=neg_ratio,
             seed=seed,
+            frame_start=frame_start,
         )
     except Exception as e:
         out.errors.append(f"build_vidvrd_predcls_entry failed: {type(e).__name__}: {e}")
@@ -395,50 +427,50 @@ def validate_vidvrd_sample_pipeline(
 
     if run_forward:
         ckpt = base_ckpt_path or resolve_repo_path("ckpts/sttran_predcls.tar")
-        if not os.path.isfile(ckpt):
+        use_random_init = bool(mock_featurizer) or (not os.path.isfile(ckpt))
+        if use_random_init and not mock_featurizer:
             out.warnings.append(
-                f"No checkpoint at {ckpt!r}; skipping STTran forward. "
-                "Set base_ckpt_path or download ckpts/sttran_predcls.tar."
+                f"No checkpoint at {ckpt!r}; STTran forward uses random init (shape check only)."
             )
-        else:
-            try:
-                sttran = STTran(
-                    mode="predcls",
-                    attention_class_num=len(attention_relationships),
-                    spatial_class_num=len(spatial_relationships),
-                    contact_class_num=len(contacting_relationships),
-                    obj_classes=object_classes,
-                    enc_layer_num=1,
-                    dec_layer_num=3,
-                ).to(dev)
+        try:
+            sttran = STTran(
+                mode="predcls",
+                attention_class_num=len(attention_relationships),
+                spatial_class_num=len(spatial_relationships),
+                contact_class_num=len(contacting_relationships),
+                obj_classes=object_classes,
+                enc_layer_num=1,
+                dec_layer_num=3,
+            ).to(dev)
+            if not use_random_init:
                 try:
                     blob = torch.load(ckpt, map_location=dev, weights_only=False)
                 except TypeError:
                     blob = torch.load(ckpt, map_location=dev)
                 sttran.load_state_dict(blob["state_dict"], strict=False)
-                sttran.eval()
-                multi = STTranMultiHead(sttran, num_vidvrd_predicates=num_vidvrd_predicates).to(dev)
-                multi.eval()
-                with torch.inference_mode():
-                    mo = multi(entry, head="vidvrd")
-                if mo.vidvrd_logits is None:
-                    out.errors.append("forward returned no vidvrd_logits")
-                    return out
-                lg = mo.vidvrd_logits
-                out.diagnostics["vidvrd_logits_shape"] = tuple(lg.shape)
-                if lg.shape[0] != pred_target.shape[0]:
-                    out.errors.append(
-                        f"logits rows {lg.shape[0]} != pred_target rows {pred_target.shape[0]}"
-                    )
-                    return out
-                if lg.shape[1] != num_vidvrd_predicates:
-                    out.errors.append(
-                        f"logits P {lg.shape[1]} != num_vidvrd_predicates {num_vidvrd_predicates}"
-                    )
-                    return out
-            except Exception as e:
-                out.errors.append(f"STTran forward dry-run failed: {e}")
+            sttran.eval()
+            multi = STTranMultiHead(sttran, num_vidvrd_predicates=num_vidvrd_predicates).to(dev)
+            multi.eval()
+            with torch.inference_mode():
+                mo = multi(entry, head="vidvrd")
+            if mo.vidvrd_logits is None:
+                out.errors.append("forward returned no vidvrd_logits")
                 return out
+            lg = mo.vidvrd_logits
+            out.diagnostics["vidvrd_logits_shape"] = tuple(lg.shape)
+            if lg.shape[0] != pred_target.shape[0]:
+                out.errors.append(
+                    f"logits rows {lg.shape[0]} != pred_target rows {pred_target.shape[0]}"
+                )
+                return out
+            if lg.shape[1] != num_vidvrd_predicates:
+                out.errors.append(
+                    f"logits P {lg.shape[1]} != num_vidvrd_predicates {num_vidvrd_predicates}"
+                )
+                return out
+        except Exception as e:
+            out.errors.append(f"STTran forward dry-run failed: {e}")
+            return out
 
     out.ok = True
     return out
@@ -537,6 +569,18 @@ if __name__ == "__main__":
     )
     p.add_argument("--video_id", type=str, default="ILSVRC2015_train_00010001")
     p.add_argument(
+        "--frames_subdir",
+        type=str,
+        default="test_frames_480",
+        help="Frames folder under dataset_root (e.g. train_frames_480 or test_frames_480).",
+    )
+    p.add_argument(
+        "--json_subdir",
+        type=str,
+        default="test_480",
+        help="JSON folder under dataset_root (e.g. train_480 or test_480).",
+    )
+    p.add_argument(
         "--vocab_json",
         type=str,
         default="",
@@ -571,11 +615,25 @@ if __name__ == "__main__":
     )
     p.add_argument("--expected_hw", type=str, default="", help="Optional H,W e.g. 480,854")
     p.add_argument("--max_frames", type=int, default=32)
+    p.add_argument(
+        "--frame_start",
+        type=int,
+        default=0,
+        help="Start frame index within the video (useful if early frames have no relations/boxes).",
+    )
     p.add_argument("--no_forward", action="store_true", help="Skip STTran checkpoint load + forward")
     p.add_argument(
         "--debug_trace",
         action="store_true",
         help="On failure, include full Python traceback in diagnostics.",
+    )
+    p.add_argument(
+        "--mock_featurizer",
+        action="store_true",
+        help=(
+            "Skip Faster R-CNN: use zero ROI features (shape check). "
+            "Forward uses random STTran init if no checkpoint is found."
+        ),
     )
     args = p.parse_args()
 
@@ -624,11 +682,15 @@ if __name__ == "__main__":
     if dataset_root:
         r = validate_vidvrd_dataset_layout(
             dataset_root,
+            frames_subdir=str(args.frames_subdir),
+            json_subdir=str(args.json_subdir),
             video_id=args.video_id,
             expected_hw=exp,
             max_frames=args.max_frames,
+            frame_start=int(args.frame_start),
             run_forward=not args.no_forward,
             debug_trace=bool(args.debug_trace),
+            mock_featurizer=bool(args.mock_featurizer),
             object_categories=object_categories,
             predicate_names=predicate_names,
             num_vidvrd_predicates=None if int(args.num_predicates) == 0 else int(args.num_predicates),
@@ -641,8 +703,10 @@ if __name__ == "__main__":
             frames_dir=args.frames_dir,
             expected_hw=exp,
             max_frames=args.max_frames,
+            frame_start=int(args.frame_start),
             run_forward=not args.no_forward,
             debug_trace=bool(args.debug_trace),
+            mock_featurizer=bool(args.mock_featurizer),
             object_categories=object_categories,
             predicate_names=predicate_names,
             num_vidvrd_predicates=None if int(args.num_predicates) == 0 else int(args.num_predicates),
