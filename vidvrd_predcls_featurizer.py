@@ -64,6 +64,18 @@ class VidvrdPredclsFeaturizer(nn.Module):
         device = im_data.device
         T = int(im_data.shape[0])
 
+        # Ensure tensors are on the same device as the backbone feature maps.
+        # In notebook code it is common to create boxes/pairs on CPU (e.g. from numpy),
+        # which makes the CUDA ROI ops fail with "rois must be a CUDA tensor".
+        if im_info.device != device:
+            im_info = im_info.to(device)
+        if boxes.device != device:
+            boxes = boxes.to(device)
+        if pair_idx.device != device:
+            pair_idx = pair_idx.to(device)
+        if im_idx.device != device:
+            im_idx = im_idx.to(device)
+
         # Normalize im_idx dtype for indexing / concatenation.
         if im_idx.dtype.is_floating_point:
             im_idx_long = im_idx.long()
