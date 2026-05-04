@@ -1,10 +1,21 @@
 Artifacts and data paths (clone-friendly layout)
 =================================================
 
+This file is the **single inventory** for: what to download, env overrides, clone vs
+local weights, VIDVRD fine-tuning artifacts, and Colab training entrypoints. For the
+VIDVRD tensor pipeline (JSON → ``entry``), see **VIDVRD_STTRAN_PIPELINE.txt**.
+
 All paths below are relative to the **STTran repository root** unless noted.
-Code resolves them via ``lib.repo_paths`` (not the shell cwd). Large binaries are
-gitignored: obtain them with ``python scripts/download_sttran_ag_weights.py`` or
-copy from a teammate / Drive.
+Code resolves them via ``lib.repo_paths`` (``resolve_repo_path``, ``repo_root``,
+``repo_data_dir``) — **not** ``os.getcwd()`` — so scripts behave when run from Colab
+``/content`` or any working directory.
+
+Large binaries are **gitignored**: use ``python scripts/download_sttran_ag_weights.py``
+(with ``--link_into_repo``) or copy from Drive / a teammate.
+
+**Git workflow (colleagues who already have weights):** update with ``git pull`` on
+their existing clone; do **not** run ``git clone`` again. Pull only changes tracked
+files; ``*.pth``, ``*.tar``, ``ckpts/``, etc. stay on disk until they delete them.
 
 --------------------------------------------------------------------
 A) Shipped in git (no download)
@@ -12,6 +23,14 @@ A) Shipped in git (no download)
   - Source under ``lib/``, ``dataloader/``, ``fasterRCNN/``, configs, etc.
   - ``data/ag_bootstrap/{object_classes,relationship_classes}.txt``
       Action Genome *label names only* (for detector/STTran init without AG_DATA_PATH).
+      Loaded by ``lib/ag_bootstrap.load_ag_label_bundle()`` (same string fixes as
+      ``dataloader.action_genome.AG``).
+  - ``lib/repo_paths.py`` — repo-root path resolution for weights / checkpoints / outputs.
+  - ``lib/vidvrd_checkpoint.py`` — save/load VIDVRD fine-tunes (``full`` vs ``head_only``).
+  - ``lib/vidvrd_train_utils.py`` — freeze policy, ``train_step_vidvrd``, synthetic batch.
+  - ``colab/vidvrd_train_colab.py`` — Colab-oriented training skeleton (see section G).
+  - ``lib/vidvrd_pipeline_validate.py`` — pre-flight checks JSON + 480p frames → ``entry``
+    (same path as training); see **VIDVRD_STTRAN_PIPELINE.txt** “Pre-flight validation”.
   - ``requirements.txt`` (Python dependencies).
 
 --------------------------------------------------------------------
@@ -74,14 +93,21 @@ D) VIDVRD: what exists in this repo vs what you need to train
 
 **Not in repo yet (you must add for real VIDVRD training):**
   - **VIDVRD dataset**: videos or extracted frames + official annotations (JSON
-    or converted to your schema).
+    or converted to your schema); e.g. unzip under Colab ``/content`` or mount Drive.
   - **Fixed label spaces**: e.g. 34 object categories and 131 predicates (+ background),
     as stable index maps (do not rely on ``sorted(unique from one JSON)`` for training).
-  - **Training script / loop**: cross-entropy (or your loss) on ``vidvrd_head`` logits;
-    optimizer; train/val split; logging. The current demo only runs a forward pass.
-  - **Initialization (recommended)**: load **sttran_predcls.tar** (or another AG ckpt)
-    into the STTran trunk and **freeze** Faster R-CNN; train mostly ``vidvrd_head``
-    (+ optionally trunk). Same files as (C2) + (C1).
+  - **Real dataloader**: replace the ``TODO`` in ``colab/vidvrd_train_colab.py`` — each
+    batch should yield ``(entry, pred_target)`` with the same ``entry`` contract as in
+    **VIDVRD_STTRAN_PIPELINE.txt** (and ``train_step_vidvrd`` in ``lib/vidvrd_train_utils.py``).
+  - **Initialization (recommended)**: load **sttran_predcls.tar** into the STTran trunk,
+    **freeze** Faster R-CNN, default **freeze AG readout linears** (three predicate groups),
+    train **``vidvrd_head``** only unless you opt in to trunk fine-tune (section G).
+    Same weight files as (C2) + (C1).
+
+**AG vs VIDVRD heads (design):** In one ``forward`` call you choose ``head="ag"`` **or**
+``head="vidvrd"``, not both. AG uses **three** readouts (attention / spatial / contact)
+from the same trunk; VIDVRD uses **one** ``Linear(1936, P)``. See ``lib/sttran.py`` and
+``sttran_multitask_heads.py``.
 
 **Environment summary for VIDVRD-style training (when you implement it):**
   - AG_DATA_PATH: **not** required if you only use ag_bootstrap + VIDVRD frames.
@@ -98,3 +124,70 @@ E) Optional overrides (all paths)
   STTRAN_CKPT               STTran .tar checkpoint
   OUT_VIZ_ROOT / OUT_LOGS_ROOT / SGDET_OUT_VIZ / SGDET_OUT_LOGS
                             Repo-relative or absolute output roots
+
+--------------------------------------------------------------------
+F) VIDVRD fine-tune checkpoints (base vs new weights)
+--------------------------------------------------------------------
+Use ``lib/vidvrd_checkpoint.py``:
+
+  - **Backup** original AG checkpoint to Drive (or another folder) with ``backup_file``
+    so ``git pull`` / training never overwrites your only copy of ``sttran_predcls.tar``.
+
+  - **Save** after training:
+      - ``mode="full"`` — entire ``STTranMultiHead`` (trunk + head); one file; best for resume.
+      - ``mode="head_only"`` — only ``vidvrd_head.*``; small; on load you must first load the
+        same base ``.tar`` into ``STTran``, then ``apply_vidvrd_checkpoint_to_model``.
+
+API summary (``lib/vidvrd_checkpoint.py``):
+  - ``save_vidvrd_train_checkpoint(path, multi, mode=..., extra_meta=...)``
+  - ``load_vidvrd_checkpoint_blob(path, map_location=...)`` — raw dict
+  - ``apply_vidvrd_checkpoint_to_model(multi, path, strict_full=True)`` — in-place load
+  - ``backup_file(src, dest_dir, suffix="")`` — copy e.g. base ``.tar`` before training
+
+--------------------------------------------------------------------
+G) Colab training skeleton (``colab/vidvrd_train_colab.py``)
+--------------------------------------------------------------------
+**Purpose:** backup base weights → build ``STTran`` from ``--base_ckpt`` → wrap
+``STTranMultiHead`` → apply ``freeze_for_vidvrd_training`` (AG readouts off by default)
+→ epoch loop → ``save_vidvrd_train_checkpoint`` under ``--out_dir/checkpoints/``.
+
+**Typical invocation (smoke test, no VIDVRD zip):**
+
+  cd /content/STTran    # your clone
+  python colab/vidvrd_train_colab.py \\
+      --out_dir "/content/drive/MyDrive/vidvrd_runs/exp1" \\
+      --epochs 2 --synthetic --save_mode full
+
+**Flags:**
+  --base_ckpt PATH     default: env STTRAN_CKPT or repo ``ckpts/sttran_predcls.tar``
+  --out_dir DIR        required; receives ``backups/`` and ``checkpoints/``
+  --epochs N
+  --lr FLOAT           default 1e-3 (Adam on trainable params only)
+  --num_predicates P   default 132 (include background if your loss uses id 0)
+  --synthetic          random ``entry`` / targets (verifies loss backward / save)
+  --train_sttran_trunk also unfreeze STTran trunk (still keeps ``a_rel_compress``,
+                       ``s_rel_compress``, ``c_rel_compress`` frozen unless you change
+                       ``lib/vidvrd_train_utils.freeze_for_vidvrd_training``)
+  --save_mode full|head_only   passed through to ``save_vidvrd_train_checkpoint``
+
+**Backups written:**
+  - ``<out_dir>/backups/<basename>_at_train_start<ext>`` — copy of ``--base_ckpt``
+  - Best-effort copy to ``data/backups/`` under the repo (same suffix); ignored if
+    the filesystem is read-only.
+
+**``lib/vidvrd_train_utils.py`` (no refactor of core STTran required):**
+  - ``freeze_for_vidvrd_training(multi, train_vidvrd_head=True, train_sttran_trunk=False,
+    train_ag_readouts=False)``
+  - ``train_step_vidvrd(...)`` / ``eval_step_vidvrd(...)``
+  - ``make_synthetic_vidvrd_entry(...)`` — **smoke only**; does not run the VIDVRD JSON
+    pipeline or featurizer.
+  - ``build_training_batch_from_vidvrd(...)`` — **real batches**; thin wrapper around
+    ``vidvrd_predcls_input.build_vidvrd_predcls_entry`` (same as ``run_vidvrd_json_demo.py``).
+  - ``default_base_ckpt_path()`` / ``default_backup_dir()`` — repo-relative helpers
+
+--------------------------------------------------------------------
+H) Cross-reference (other docs)
+--------------------------------------------------------------------
+  - **VIDVRD_STTRAN_PIPELINE.txt** — JSON schema, featurizer, ``entry`` keys, head routing,
+    checkpoint + Colab section (narrative duplicate of parts of this file).
+  - **report.txt** — project run notes (if present); not a substitute for this file.

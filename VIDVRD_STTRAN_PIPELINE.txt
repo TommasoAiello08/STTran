@@ -1,6 +1,10 @@
 VIDVRD → STTran (predcls-style) pipeline (this repo)
 ===================================================
 
+This file documents the **tensor pipeline**: VIDVRD-style JSON → ``entry`` dict →
+``STTranMultiHead`` / ``head="vidvrd"``. For **weights, env vars, Colab commands,
+checkpoints, and git**, see **REQUIRED_ARTIFACTS.txt** (broader, inventory-style).
+
 This file documents the concrete utilities added to connect a VIDVRD-style JSON
 (trajectory-based) to the exact `entry` dict format consumed by `lib/sttran.py`.
 
@@ -101,14 +105,21 @@ This matches the predcls logic in `lib/object_detector.py`:
 
 3) lib/sttran.py (small refactor)
 ---------------------------------
-Change: STTran.forward now accepts:
-  forward(entry, return_global_output: bool = False)
+``STTran.forward`` signature (``head`` is **required** — no silent AG default):
 
-If return_global_output=True, returns:
-  (entry, global_output)
-where global_output is the transformer output representation used by heads.
+  forward(entry, *, head: str, return_global_output: bool = False)
 
-This enables additional heads (VIDVRD) without duplicating the trunk.
+  - ``head="ag"`` — fills ``attention_distribution``, ``spatial_distribution``,
+    ``contacting_distribution`` on ``entry`` (three AG readouts from one trunk pass).
+  - ``head="vidvrd"`` — does **not** fill those three; exposes ``global_output`` when
+    ``return_global_output=True`` for the external VIDVRD linear head.
+
+If ``return_global_output=True``, returns ``(entry, global_output)`` where
+``global_output`` is the per-pair transformer output (dim 1936) fed to ``vidvrd_head``.
+
+**3 vs 1 heads:** each forward is either the **three** AG predicate linears **or** the
+**single** VIDVRD head on the same trunk — not four parallel heads in one call. See
+``sttran_multitask_heads.STTranMultiHead.forward``.
 
 4) sttran_multitask_heads.py
 ----------------------------
@@ -123,6 +134,26 @@ Forward:
   - head="ag": behaves like stock STTran (fills attention/spatial/contact keys)
   - head="vidvrd": calls sttran(..., return_global_output=True) and then:
         vidvrd_logits = vidvrd_head(global_output)
+
+Pre-flight validation (Colab / local)
+---------------------------------------
+``lib/vidvrd_pipeline_validate.py``:
+
+  - ``validate_vidvrd_sample_pipeline(json_path=..., frames_dir=..., expected_hw=(480,854), ...)``
+    Checks JSON vs disk **(H,W) == (height,width)**, runs the **same** preprocessing as
+    the Action Genome loader (``prep_im_for_blob`` / ``im_list_to_blob``), then
+    ``build_vidvrd_predcls_entry`` + tensor checks + optional ``STTranMultiHead`` forward.
+  - ``validate_vidvrd_dataset_layout(dataset_root, video_id=..., frames_subdir="test_frames_480", json_subdir="test_480")``
+    for the ``VIDVRD-DATASET_480/...`` layout.
+
+CLI (from ``STTran`` repo root, so ``import lib`` resolves)::
+
+  cd STTran
+  python lib/vidvrd_pipeline_validate.py --dataset_root /path/VIDVRD-DATASET_480 --expected_hw 480,854
+
+Or explicit paths::
+
+  python lib/vidvrd_pipeline_validate.py --json /path/video.json --frames_dir /path/to/frames_dir
 
 End-to-end demo
 ---------------
@@ -139,18 +170,54 @@ downloading VIDVRD frames.
 
 What you still need for real training
 -------------------------------------
-See **REQUIRED_ARTIFACTS.txt** (section D) for a checklist. In short:
+See **REQUIRED_ARTIFACTS.txt** (sections D, F, G) for the full checklist, env vars, and
+Colab CLI. In short:
 
-  - **Detector**: ``fasterRCNN/models/faster_rcnn_ag.pth`` (repo-internal path; in gitignore).
+  - **Detector**: ``fasterRCNN/models/faster_rcnn_ag.pth`` (repo-internal path; gitignored).
   - **GloVe** under ``data/`` for STTran semantic inputs.
-  - **Optional AG init**: ``ckpts/sttran_predcls.tar`` (or similar) to warm-start the trunk;
-    there is no dedicated VIDVRD training script in this repo yet — you add the loop.
+  - **AG init**: ``ckpts/sttran_predcls.tar`` (or compatible) loaded into ``STTran`` before
+    wrapping ``STTranMultiHead``. Training entrypoint: ``colab/vidvrd_train_colab.py``.
   - **VIDVRD data**: frames + annotations; **fixed** vocab (e.g. 34 objects, 131 predicates
     + background), not ad-hoc ``sorted()`` over one JSON file.
-  - **Training loop** (to implement): load real frames; build ``im_data`` / ``im_info``
-    consistent with the Faster R-CNN preprocessing; ``loss = CE(vidvrd_logits, pred_target)``;
-    typically freeze Faster R-CNN and fine-tune STTran trunk + ``vidvrd_head``.
+  - **Training step**: ``lib/vidvrd_train_utils.train_step_vidvrd`` expects ``entry`` in
+    **predcls** form (``ObjectClassifier`` copies ``labels`` → ``pred_labels``). Build
+    ``entry`` like ``build_vidvrd_predcls_entry`` + featurizer, or match the tensor
+    contract listed above.
 
-``run_vidvrd_json_demo.py`` no longer needs ``AG_DATA_PATH``: AG label lists are vendored
-under ``data/ag_bootstrap/``. Full Action Genome dataloaders still require ``AG_DATA_PATH``.
+``run_vidvrd_json_demo.py`` does **not** need ``AG_DATA_PATH``: label lists come from
+``data/ag_bootstrap/`` via ``lib/ag_bootstrap.load_ag_label_bundle()``. Full Action Genome
+dataloaders still require ``AG_DATA_PATH``.
+
+Checkpoints (base vs VIDVRD fine-tune, Colab / Drive)
+---------------------------------------------------
+**Problem:** Fine-tuned tensors may be only ``vidvrd_head`` (small) while the trunk still
+comes from ``sttran_predcls.tar``. Saving only the head is valid if reload always:
+  1) builds ``STTran`` and loads the **unchanged** base ``.tar`` into ``.sttran``, then
+  2) wraps ``STTranMultiHead`` and applies the head checkpoint.
+
+**Implementation:** ``lib/vidvrd_checkpoint.py``
+
+  - ``save_vidvrd_train_checkpoint(path, multi, mode="full"|"head_only", extra_meta=...)``
+  - ``apply_vidvrd_checkpoint_to_model(multi, path)``
+  - ``backup_file(src, dest_dir)`` — copy original ``ckpts/*.tar`` to Drive before training
+
+Training skeleton (Colab)
+-------------------------
+Narrative summary; **full flag list and backup layout** are in **REQUIRED_ARTIFACTS.txt**
+section G.
+
+  - ``colab/vidvrd_train_colab.py`` — argparse entrypoint: copies ``--base_ckpt`` into
+    ``<out_dir>/backups/`` (and tries ``data/backups/``), builds ``STTranMultiHead``,
+    calls ``freeze_for_vidvrd_training`` (AG readout linears frozen by default), runs
+    epochs. ``--synthetic`` = random tensors only (does **not** validate JSON/featurizer).
+  - ``lib/vidvrd_train_utils.py`` — ``build_training_batch_from_vidvrd`` re-exports the
+    same path as ``build_vidvrd_predcls_entry`` (connects training to this document);
+    ``train_step_vidvrd``, freeze helpers, ``make_synthetic_vidvrd_entry``.
+
+Recommended Colab habit:
+  - Rely on ``vidvrd_train_colab.py`` backups under ``<out_dir>/backups/``, or manually
+    ``backup_file("ckpts/sttran_predcls.tar", "/content/drive/MyDrive/sttran_backups/")``.
+  - Each epoch: ``save_vidvrd_train_checkpoint`` with ``mode="full"`` (simplest resume)
+    or ``mode="head_only"`` if you always pair with the same base ``.tar`` and record
+    ``base_ckpt`` in ``extra_meta``.
 
