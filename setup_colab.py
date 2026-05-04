@@ -18,6 +18,7 @@ On stock Colab (PyTorch ≥ 2.x), the legacy CUDA extension ``fasterRCNN/lib/mod
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -25,9 +26,12 @@ import sys
 import traceback
 import urllib.request
 import zipfile
+from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
+STAMP_PATH = REPO_ROOT / ".colab_setup_stamp.json"
 
 EXTRA_PIP = [
     "gdown",
@@ -56,6 +60,42 @@ COLAB_PIP_EXTRAS = [
 GLOVE_URL_PRIMARY = "http://nlp.stanford.edu/data/glove.6B.zip"
 GLOVE_URL_MIRROR = "https://huggingface.co/stanfordnlp/glove/resolve/main/glove.6B.zip"
 GLOVE_MEMBER = "glove.6B.200d.txt"
+
+
+def _hash_file(path: Path) -> str:
+    h = sha256()
+    with path.open("rb") as f:
+        while True:
+            b = f.read(1024 * 1024)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def _load_stamp() -> dict | None:
+    try:
+        if STAMP_PATH.is_file():
+            return json.loads(STAMP_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return None
+
+
+def _write_stamp(data: dict) -> None:
+    data = dict(data)
+    data["written_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    STAMP_PATH.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _weights_present_in_repo() -> bool:
+    """
+    Minimum weight files at expected repo-relative paths.
+    (If you use env var overrides instead, pass --skip-weights.)
+    """
+    frcnn = REPO_ROOT / "fasterRCNN" / "models" / "faster_rcnn_ag.pth"
+    sttran = REPO_ROOT / "ckpts" / "sttran_predcls.tar"
+    return frcnn.is_file() and frcnn.stat().st_size > 0 and sttran.is_file() and sttran.stat().st_size > 0
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, env: dict | None = None) -> None:
@@ -181,6 +221,9 @@ def step_glove() -> None:
 
 
 def step_weights(cache_dir: Path, link_into_repo: bool) -> None:
+    if link_into_repo and _weights_present_in_repo():
+        print("[skip] weights already present in repo (faster_rcnn_ag.pth + sttran_predcls.tar)", flush=True)
+        return
     cache_dir = cache_dir.resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
     script = REPO_ROOT / "scripts" / "download_sttran_ag_weights.py"
@@ -244,6 +287,11 @@ def main() -> None:
     os.chdir(REPO_ROOT)
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore cached stamp and rerun steps (still respects explicit --skip-* flags).",
+    )
+    ap.add_argument(
         "--colab",
         action="store_true",
         help="Colab mode: do not reinstall torch/torchvision from requirements.txt; install other deps only.",
@@ -289,6 +337,24 @@ def main() -> None:
     print(f"STTran Colab setup  repo_root={REPO_ROOT}")
     print("==============================================================")
 
+    # Idempotency: in the *same* runtime, don't redo slow steps if we already succeeded.
+    req = REPO_ROOT / "requirements.txt"
+    req_hash = _hash_file(req) if req.is_file() else ""
+    stamp = None if args.force else _load_stamp()
+    if stamp and stamp.get("repo_root") == str(REPO_ROOT) and stamp.get("requirements_sha256") == req_hash:
+        if not args.skip_pip and stamp.get("pip_ok") is True:
+            args.skip_pip = True
+            print(f"[skip] pip step already completed (stamp={STAMP_PATH.name})", flush=True)
+        if not args.skip_glove and (REPO_ROOT / "data" / GLOVE_MEMBER).is_file():
+            args.skip_glove = True
+            print(f"[skip] glove already present (stamp={STAMP_PATH.name})", flush=True)
+        if not args.skip_weights and _weights_present_in_repo():
+            args.skip_weights = True
+            print(f"[skip] weights already present (stamp={STAMP_PATH.name})", flush=True)
+        if not args.skip_compile and stamp.get("compile_ok") is True:
+            args.skip_compile = True
+            print(f"[skip] compile step already completed (stamp={STAMP_PATH.name})", flush=True)
+
     if not args.skip_pip:
         step_pip(upgrade_pip=not args.no_upgrade_pip, colab=args.colab)
     if not args.skip_compile:
@@ -306,6 +372,18 @@ def main() -> None:
         step_verify(skip_native_extensions=args.skip_compile)
     elif args.skip_verify:
         print("  (skipped --skip-verify)")
+
+    _write_stamp(
+        {
+            "repo_root": str(REPO_ROOT),
+            "requirements_sha256": req_hash,
+            "colab": bool(args.colab),
+            "pip_ok": True,
+            "compile_ok": True,
+            "glove_ok": bool((REPO_ROOT / "data" / GLOVE_MEMBER).is_file()),
+            "weights_ok_in_repo": bool(_weights_present_in_repo()),
+        }
+    )
 
     print("==============================================================")
     print("Done. Set AG_DATA_PATH to Action Genome root, then:")
