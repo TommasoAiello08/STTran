@@ -25,7 +25,7 @@ unfreeze the STTran **trunk** (transformer + pair MLPs + embeddings); by default
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -45,6 +45,7 @@ def build_training_batch_from_vidvrd(
     neg_ratio: int = 3,
     seed: int = 7,
     frame_start: int = 0,
+    category_to_ag_index: Optional[Dict[str, int]] = None,
 ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, list]:
     """
     Real VIDVRD batch: **same path** as ``run_vidvrd_json_demo.py`` → ``build_vidvrd_predcls_entry``.
@@ -65,6 +66,7 @@ def build_training_batch_from_vidvrd(
         neg_ratio=neg_ratio,
         seed=seed,
         frame_start=int(frame_start),
+        category_to_ag_index=category_to_ag_index,
     )
 
 

@@ -31,6 +31,7 @@ from lib.object_detector import detector
 from lib.sttran import STTran
 from sttran_multitask_heads import STTranMultiHead
 from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+from lib.vidvrd_ag_label_bridge import build_category_to_ag_index
 from vidvrd_predcls_input import build_vidvrd_predcls_entry, build_vidvrd_vocab_maps
 
 
@@ -97,6 +98,7 @@ def main() -> None:
     featurizer = VidvrdPredclsFeaturizer(det.fasterRCNN, chunk_frames=10).to(device)
     featurizer.eval()
 
+    category_to_ag = build_category_to_ag_index(sorted(obj2id.keys()), object_classes)
     entry, pred_target, skipped = build_vidvrd_predcls_entry(
         vidvrd_json=vidvrd,
         obj2id=obj2id,
@@ -105,6 +107,7 @@ def main() -> None:
         im_info=im_info,
         featurizer=featurizer,
         neg_ratio=args.neg_ratio,
+        category_to_ag_index=category_to_ag,
     )
 
     with torch.inference_mode():

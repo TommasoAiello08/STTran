@@ -32,6 +32,7 @@ from lib.ag_bootstrap import load_ag_label_bundle
 from lib.repo_paths import resolve_repo_path
 from lib.sttran import STTran
 from sttran_multitask_heads import STTranMultiHead
+from lib.vidvrd_ag_label_bridge import build_category_to_ag_index
 from lib.vidvrd_mock_featurizer import VidvrdMockFeaturizer
 from vidvrd_predcls_input import (
     build_vidvrd_predcls_entry,
@@ -392,6 +393,8 @@ def validate_vidvrd_sample_pipeline(
             )
             return out
 
+    category_to_ag = build_category_to_ag_index(sorted(obj2id.keys()), object_classes)
+
     # --- Same function as training ---------------------------------------------
     try:
         entry, pred_target, skipped = build_vidvrd_predcls_entry(
@@ -404,6 +407,7 @@ def validate_vidvrd_sample_pipeline(
             neg_ratio=neg_ratio,
             seed=seed,
             frame_start=frame_start,
+            category_to_ag_index=category_to_ag,
         )
     except Exception as e:
         out.errors.append(f"build_vidvrd_predcls_entry failed: {type(e).__name__}: {e}")

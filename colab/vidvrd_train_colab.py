@@ -302,12 +302,18 @@ def main() -> None:
     num_predicates = int(args.num_predicates)
     obj2id = None
     pred2id = None
+    category_to_ag: dict[str, int] | None = None
     if not args.synthetic:
         if not dataset_root:
             raise SystemExit("Non-synthetic training requires --dataset_root (or --dataset_zip).")
         if not args.vocab_json:
             raise SystemExit("Non-synthetic training requires --vocab_json (stable VIDVRD vocab).")
         obj2id, pred2id, num_predicates = _load_vocab(args.vocab_json)
+        from lib.vidvrd_ag_label_bridge import build_category_to_ag_index
+
+        ag_object_classes = load_ag_label_bundle()[0]
+        category_to_ag = build_category_to_ag_index(sorted(obj2id.keys()), ag_object_classes)
+        print(f"[vidvrd] category->AG index map: {len(category_to_ag)} entries (for STTran obj_embed)")
 
     multi = _build_model(
         device, args.base_ckpt, num_predicates, random_init=random_init
@@ -448,6 +454,7 @@ def main() -> None:
                     neg_ratio=int(args.neg_ratio),
                     seed=epoch * 1000 + vi,
                     frame_start=fs,
+                    category_to_ag_index=category_to_ag,
                 )
                 if skipped and vi % log_every == 0:
                     print(f"[warn] {video_id}: skipped_relation_msgs={len(skipped)}")

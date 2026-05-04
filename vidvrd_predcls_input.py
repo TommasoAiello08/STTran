@@ -151,9 +151,15 @@ def build_sttran_nodes_from_vidvrd_frames(
     frames: Sequence[Sequence[VidvrdNodeOccur]],
     obj2id: Dict[str, int],
     clamp_boxes_to_image: Optional[Tuple[int, int]] = None,  # (W,H)
+    category_to_ag_index: Optional[Dict[str, int]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, List[int], List[Dict[int, int]]]:
     """
     Convert per-frame node occurrences into STTran node tensors.
+
+    Args:
+      category_to_ag_index: If set, ``labels`` use **Action Genome** class indices for
+        STTran's ``obj_embed`` lookup. If ``None``, ``labels`` use ``obj2id`` (legacy;
+        wrong semantics for fine-tuning on VIDVRD unless IDs align with AG by chance).
 
     Returns:
       boxes:  FloatTensor[N,5] = [frame_idx, x1,y1,x2,y2]
@@ -181,7 +187,10 @@ def build_sttran_nodes_from_vidvrd_frames(
                 y1 = max(0.0, min(float(H - 1), y1))
                 y2 = max(0.0, min(float(H - 1), y2))
             boxes_rows.append([float(f), float(x1), float(y1), float(x2), float(y2)])
-            labels_rows.append(int(obj2id[d.category]))
+            if category_to_ag_index is not None:
+                labels_rows.append(int(category_to_ag_index.get(d.category, 1)))
+            else:
+                labels_rows.append(int(obj2id[d.category]))
             offset += 1
         tid_to_local_idx.append(local_map)
 
@@ -333,9 +342,14 @@ def build_vidvrd_predcls_entry(
     seed: int = 7,
     clamp_boxes_to_image: bool = True,
     frame_start: int = 0,
+    category_to_ag_index: Optional[Dict[str, int]] = None,
 ) -> Tuple[dict, torch.Tensor, List[str]]:
     """
     End-to-end: VIDVRD JSON → STTran `entry` (predcls-style) + predicate targets.
+
+    Args:
+      category_to_ag_index: Optional map VIDVRD category string → AG class index for
+        ``entry['labels']`` (STTran semantic branch). Strongly recommended for real training.
 
     Returns:
       entry: dict ready for `lib/sttran.STTran.forward`
@@ -373,7 +387,10 @@ def build_vidvrd_predcls_entry(
 
     clamp = (int(meta.width), int(meta.height)) if clamp_boxes_to_image else None
     boxes, labels, frame_offsets, tid_to_local_idx = build_sttran_nodes_from_vidvrd_frames(
-        frames=frames, obj2id=obj2id, clamp_boxes_to_image=clamp
+        frames=frames,
+        obj2id=obj2id,
+        clamp_boxes_to_image=clamp,
+        category_to_ag_index=category_to_ag_index,
     )
     sizes = frame_sizes_from_frames(frames)
     pos, skipped = build_vidvrd_pairs_from_relation_spans(
