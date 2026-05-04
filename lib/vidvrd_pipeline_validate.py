@@ -537,6 +537,30 @@ if __name__ == "__main__":
     )
     p.add_argument("--video_id", type=str, default="ILSVRC2015_train_00010001")
     p.add_argument(
+        "--vocab_json",
+        type=str,
+        default="",
+        help=(
+            "Optional path to a JSON file with keys "
+            "{object_categories: [...], predicate_names: [...]} to enforce a stable vocab."
+        ),
+    )
+    p.add_argument(
+        "--vocab_scan_dir",
+        type=str,
+        default="",
+        help=(
+            "Optional directory of per-video JSON files to build a stable vocab "
+            "(e.g. <dataset_root>/train_480). Used only if --vocab_json is not set."
+        ),
+    )
+    p.add_argument(
+        "--save_vocab_json",
+        type=str,
+        default="",
+        help="If set and a vocab is built (from --vocab_scan_dir), save it to this path.",
+    )
+    p.add_argument(
         "--num_predicates",
         type=int,
         default=132,
@@ -562,6 +586,41 @@ if __name__ == "__main__":
 
     dataset_root = _maybe_unzip_dataset(args.dataset_root, args.dataset_zip)
 
+    object_categories = None
+    predicate_names = None
+    if args.vocab_json:
+        v = json.loads(Path(args.vocab_json).read_text(encoding="utf-8"))
+        object_categories = list(v["object_categories"])
+        predicate_names = list(v["predicate_names"])
+    elif args.vocab_scan_dir:
+        scan = Path(args.vocab_scan_dir)
+        if not scan.is_dir():
+            raise SystemExit(f"--vocab_scan_dir not found or not a directory: {str(scan)!r}")
+        obj_set = set()
+        pred_set = set()
+        for jp in scan.glob("*.json"):
+            d = json.loads(jp.read_text(encoding="utf-8"))
+            obj_set |= {o["category"] for o in d.get("subject/objects", [])}
+            pred_set |= {r["predicate"] for r in d.get("relation_instances", [])}
+        object_categories = sorted(obj_set)
+        predicate_names = sorted(pred_set)
+        if args.save_vocab_json:
+            outp = Path(args.save_vocab_json)
+            outp.parent.mkdir(parents=True, exist_ok=True)
+            outp.write_text(
+                json.dumps(
+                    {
+                        "object_categories": object_categories,
+                        "predicate_names": predicate_names,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            print(f"[vocab] saved {len(object_categories)} objects / {len(predicate_names)} predicates to {outp}")
+
     if dataset_root:
         r = validate_vidvrd_dataset_layout(
             dataset_root,
@@ -570,6 +629,8 @@ if __name__ == "__main__":
             max_frames=args.max_frames,
             run_forward=not args.no_forward,
             debug_trace=bool(args.debug_trace),
+            object_categories=object_categories,
+            predicate_names=predicate_names,
             num_vidvrd_predicates=None if int(args.num_predicates) == 0 else int(args.num_predicates),
         )
     else:
@@ -582,6 +643,8 @@ if __name__ == "__main__":
             max_frames=args.max_frames,
             run_forward=not args.no_forward,
             debug_trace=bool(args.debug_trace),
+            object_categories=object_categories,
+            predicate_names=predicate_names,
             num_vidvrd_predicates=None if int(args.num_predicates) == 0 else int(args.num_predicates),
         )
 
