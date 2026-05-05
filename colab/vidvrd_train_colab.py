@@ -253,6 +253,35 @@ def main() -> None:
             "Useful when runs appear stuck."
         ),
     )
+    ap.add_argument(
+        "--log_csv",
+        type=str,
+        default="",
+        help="If set, append per-video losses to this CSV (path). Default: <out_dir>/losses.csv",
+    )
+    ap.add_argument(
+        "--best_ckpt_name",
+        type=str,
+        default="best.pt",
+        help="Filename under <out_dir>/checkpoints/ to store best checkpoint.",
+    )
+    ap.add_argument(
+        "--min_delta",
+        type=float,
+        default=0.0,
+        help="Minimum improvement in epoch mean_loss to count as a new best.",
+    )
+    ap.add_argument(
+        "--patience",
+        type=int,
+        default=0,
+        help="Early stopping patience in epochs (0 disables).",
+    )
+    ap.add_argument(
+        "--save_best_only",
+        action="store_true",
+        help="If set, only save best checkpoint (skip per-epoch epoch_XXX.pt).",
+    )
     ap.add_argument("--num_predicates", type=int, default=132)
     ap.add_argument(
         "--synthetic",
@@ -298,6 +327,31 @@ def main() -> None:
     backup_dir = os.path.join(args.out_dir, "backups")
     ckpt_dir = os.path.join(args.out_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
+    meta_path = os.path.join(ckpt_dir, "best_meta.json")
+    best_ckpt_path = os.path.join(ckpt_dir, str(args.best_ckpt_name))
+    csv_path = str(args.log_csv).strip() or os.path.join(args.out_dir, "losses.csv")
+
+    # Load previous best (persists across runs in the same out_dir).
+    best_loss_prev = float("inf")
+    try:
+        if os.path.isfile(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as f:
+                best_loss_prev = float(json.load(f).get("best_mean_loss", float("inf")))
+    except Exception:
+        best_loss_prev = float("inf")
+    best_loss = best_loss_prev
+    bad_epochs = 0
+
+    # Prepare CSV log (append-safe).
+    if csv_path:
+        need_header = (not os.path.isfile(csv_path)) or os.path.getsize(csv_path) == 0
+        with open(csv_path, "a", encoding="utf-8") as f:
+            if need_header:
+                f.write(
+                    "run_id,stage,epoch,video_idx,video_id,loss,grad_norm,"
+                    "dt_json,dt_io,dt_feat,dt_bw,dt_step,dt_total\n"
+                )
+    run_id = f"{int(time.time())}"
 
     # Optional convenience: if the user provides a VIDVRD zip, unzip it once so non-synthetic
     # training implementations can rely on a local folder.
@@ -568,13 +622,13 @@ def main() -> None:
                 t_step = time.time()
                 if vi % log_every == 0 or vi == len(vids) - 1:
                     extra = ""
+                    dt_json = t_json - t0
+                    dt_io = t_io - t_json
+                    dt_feat = t_feat - t_io
+                    dt_bw = t_bw - t_feat
+                    dt_step = t_step - t_bw
+                    dt_total = t_step - t0
                     if profile_every and (vi % profile_every == 0 or vi == len(vids) - 1):
-                        dt_json = t_json - t0
-                        dt_io = t_io - t_json
-                        dt_feat = t_feat - t_io
-                        dt_bw = t_bw - t_feat
-                        dt_step = t_step - t_bw
-                        dt_total = t_step - t0
                         extra = (
                             f"  dt[s]:json={dt_json:.2f} io={dt_io:.2f} feat={dt_feat:.2f} "
                             f"bw={dt_bw:.2f} step={dt_step:.2f} total={dt_total:.2f}"
@@ -591,6 +645,15 @@ def main() -> None:
                         f"{video_id}  loss={loss:.4f}  grad_norm={gradnorm_last:.3f}{extra}"
                     )
 
+                # CSV logging (every processed video)
+                if csv_path:
+                    with open(csv_path, "a", encoding="utf-8") as f:
+                        f.write(
+                            f"{run_id},{args.stage},{epoch+1},{vi+1},{video_id},"
+                            f"{loss:.6f},{gradnorm_last:.6f},"
+                            f"{dt_json:.4f},{dt_io:.4f},{dt_feat:.4f},{dt_bw:.4f},{dt_step:.4f},{dt_total:.4f}\n"
+                        )
+
             # Flush remaining grads if epoch ended mid-accum.
             if step_in_accum > 0:
                 gradnorm_last = optimizer_step(
@@ -603,8 +666,9 @@ def main() -> None:
 
             if not losses:
                 raise SystemExit("No training steps were run (no usable videos/frames).")
+            mean_loss = float(sum(losses) / len(losses))
             print(
-                f"epoch {epoch + 1}/{args.epochs}  mean_loss={sum(losses)/len(losses):.4f}  "
+                f"epoch {epoch + 1}/{args.epochs}  mean_loss={mean_loss:.4f}  "
                 f"steps={len(losses)}  skipped_no_frames={skipped_no_frames}  "
                 f"skipped_empty_target={skipped_empty_target}  "
                 f"skipped_missing_frames_dir={skipped_missing_frames_dir}  "
@@ -612,21 +676,69 @@ def main() -> None:
                 f"epoch_time_min={(time.time()-t_epoch0)/60.0:.1f}"
             )
 
-        out_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
-        save_vidvrd_train_checkpoint(
-            out_path,
-            multi,
-            mode=args.save_mode,
-            extra_meta={
-                "base_ckpt": os.path.abspath(args.base_ckpt),
-                "epoch": epoch + 1,
-                "num_predicates": num_predicates,
-                "split": getattr(args, "split", None),
-                "dataset_root": dataset_root,
-                "vocab_json": args.vocab_json,
-            },
-        )
-        print(f"  saved {out_path} ({args.save_mode})")
+        # Checkpointing: save best only if improved (persist across runs).
+        current_mean = float("inf") if args.synthetic else float(mean_loss)  # type: ignore[name-defined]
+        improved = (current_mean + float(args.min_delta)) < float(best_loss)
+        if improved:
+            best_loss = float(current_mean)
+            bad_epochs = 0
+            save_vidvrd_train_checkpoint(
+                best_ckpt_path,
+                multi,
+                mode=args.save_mode,
+                extra_meta={
+                    "base_ckpt": os.path.abspath(args.base_ckpt),
+                    "epoch": epoch + 1,
+                    "num_predicates": num_predicates,
+                    "split": getattr(args, "split", None),
+                    "dataset_root": dataset_root,
+                    "vocab_json": args.vocab_json,
+                    "best_mean_loss": best_loss,
+                    "run_id": run_id,
+                },
+            )
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "best_mean_loss": best_loss,
+                        "best_ckpt": os.path.basename(best_ckpt_path),
+                        "epoch": epoch + 1,
+                        "stage": args.stage,
+                        "run_id": run_id,
+                    },
+                    f,
+                    indent=2,
+                    sort_keys=True,
+                )
+                f.write("\n")
+            print(f"  [best] updated {best_ckpt_path}  best_mean_loss={best_loss:.4f} (prev_best={best_loss_prev:.4f})")
+        else:
+            bad_epochs += 1
+            print(f"  [best] not improved: mean_loss={current_mean:.4f}  best={best_loss:.4f}  bad_epochs={bad_epochs}")
+
+        if not bool(args.save_best_only):
+            out_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
+            save_vidvrd_train_checkpoint(
+                out_path,
+                multi,
+                mode=args.save_mode,
+                extra_meta={
+                    "base_ckpt": os.path.abspath(args.base_ckpt),
+                    "epoch": epoch + 1,
+                    "num_predicates": num_predicates,
+                    "split": getattr(args, "split", None),
+                    "dataset_root": dataset_root,
+                    "vocab_json": args.vocab_json,
+                    "mean_loss": current_mean,
+                    "run_id": run_id,
+                },
+            )
+            print(f"  saved {out_path} ({args.save_mode})")
+
+        # Early stopping (epoch-level).
+        if int(args.patience) > 0 and bad_epochs >= int(args.patience):
+            print(f"[early_stop] patience={args.patience} reached. best_mean_loss={best_loss:.4f}. stopping.")
+            break
 
     print("Done.")
 
