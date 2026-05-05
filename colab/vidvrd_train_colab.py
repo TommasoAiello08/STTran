@@ -91,14 +91,39 @@ def _build_model(
         dec_layer_num=3,
     ).to(device)
 
-    if not random_init:
-        try:
-            ckpt = torch.load(base_ckpt, map_location=device, weights_only=False)
-        except TypeError:
-            ckpt = torch.load(base_ckpt, map_location=device)
-        sttran.load_state_dict(ckpt["state_dict"], strict=False)
-
+    # Build the multitask wrapper first; we may need it to load VIDVRD-format checkpoints.
     multi = STTranMultiHead(sttran, num_vidvrd_predicates=num_predicates).to(device)
+
+    if random_init:
+        return multi
+
+    # Checkpoint formats:
+    # - Action Genome base tar: {"state_dict": <STTran keys without 'sttran.' prefix>, ...}
+    # - VIDVRD fine-tune checkpoint (lib/vidvrd_checkpoint.py): {"state_dict": <STTranMultiHead keys>, "meta": {...}}
+    try:
+        ckpt = torch.load(base_ckpt, map_location=device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(base_ckpt, map_location=device)
+
+    sd = ckpt.get("state_dict") if isinstance(ckpt, dict) else None
+    meta = ckpt.get("meta") if isinstance(ckpt, dict) else None
+    sd_keys = list(sd.keys())[:8] if isinstance(sd, dict) else []
+
+    is_vidvrd_ckpt = False
+    if isinstance(meta, dict) and str(meta.get("format", "")) == "sttran_vidvrd_v1":
+        is_vidvrd_ckpt = True
+    elif isinstance(sd, dict) and any(k.startswith(("sttran.", "vidvrd_head.")) for k in sd_keys):
+        # Heuristic: saved from STTranMultiHead (full/head_only) uses these prefixes.
+        is_vidvrd_ckpt = True
+
+    if is_vidvrd_ckpt:
+        from lib.vidvrd_checkpoint import apply_vidvrd_checkpoint_to_model
+
+        apply_vidvrd_checkpoint_to_model(multi, base_ckpt, map_location=device, strict_full=False)
+    else:
+        # Assume Action Genome STTran checkpoint; load into the inner STTran.
+        multi.sttran.load_state_dict(sd, strict=False)  # type: ignore[arg-type]
+
     return multi
 
 
