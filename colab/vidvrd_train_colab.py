@@ -33,6 +33,7 @@ import json
 import os
 import random
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -243,6 +244,15 @@ def main() -> None:
     ap.add_argument("--amp", action="store_true", help="Use mixed precision (CUDA only).")
     ap.add_argument("--accum_steps", type=int, default=1, help="Gradient accumulation steps (videos).")
     ap.add_argument("--grad_clip", type=float, default=5.0, help="Clip grad norm (0 disables).")
+    ap.add_argument(
+        "--profile_every",
+        type=int,
+        default=0,
+        help=(
+            "If >0, print a timing breakdown every N videos (I/O, featurizer, forward/backward, step). "
+            "Useful when runs appear stuck."
+        ),
+    )
     ap.add_argument("--num_predicates", type=int, default=132)
     ap.add_argument(
         "--synthetic",
@@ -376,6 +386,7 @@ def main() -> None:
     use_amp = bool(args.amp) and torch.cuda.is_available()
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
     accum_steps = max(1, int(args.accum_steps))
+    profile_every = max(0, int(getattr(args, "profile_every", 0)))
 
     num_obj_classes = len(load_ag_label_bundle()[0])
 
@@ -475,7 +486,9 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             step_in_accum = 0
             gradnorm_last = 0.0
+            t_epoch0 = time.time()
             for vi, video_id in enumerate(vids):
+                t0 = time.time()
                 jp = json_dir / f"{video_id}.json"
                 frames_dir, frames_sub_used = _resolve_frames_dir(root, str(args.split), video_id)
                 if frames_dir is None:
@@ -489,6 +502,7 @@ def main() -> None:
                 if frames_sub_used != frames_subdir:
                     skipped_frames_subdir_mismatch += 1
                 vidvrd = json.loads(jp.read_text(encoding="utf-8"))
+                t_json = time.time()
                 frame_files = sorted(
                     [n for n in os.listdir(frames_dir) if n.lower().endswith((".jpg", ".jpeg", ".png"))]
                 )
@@ -507,6 +521,7 @@ def main() -> None:
                 im_data, im_info, _scales = _build_im(
                     str(frames_dir), frame_files, T_use, device, start_idx=fs
                 )
+                t_io = time.time()
                 entry, pred_target, skipped = build_training_batch_from_vidvrd(
                     vidvrd_json=vidvrd,
                     obj2id=obj2id,  # type: ignore[arg-type]
@@ -519,6 +534,7 @@ def main() -> None:
                     frame_start=fs,
                     category_to_ag_index=category_to_ag,
                 )
+                t_feat = time.time()
                 if skipped and vi % log_every == 0:
                     print(f"[warn] {video_id}: skipped_relation_msgs={len(skipped)}")
                 if pred_target.numel() == 0:
@@ -537,6 +553,7 @@ def main() -> None:
                     grad_clip=float(args.grad_clip),
                     accum_scale=1.0 / float(accum_steps),
                 )
+                t_bw = time.time()
                 losses.append(loss)
                 step_in_accum += 1
                 if step_in_accum >= accum_steps:
@@ -548,10 +565,30 @@ def main() -> None:
                         grad_clip=float(args.grad_clip),
                     )
                     step_in_accum = 0
+                t_step = time.time()
                 if vi % log_every == 0 or vi == len(vids) - 1:
+                    extra = ""
+                    if profile_every and (vi % profile_every == 0 or vi == len(vids) - 1):
+                        dt_json = t_json - t0
+                        dt_io = t_io - t_json
+                        dt_feat = t_feat - t_io
+                        dt_bw = t_bw - t_feat
+                        dt_step = t_step - t_bw
+                        dt_total = t_step - t0
+                        extra = (
+                            f"  dt[s]:json={dt_json:.2f} io={dt_io:.2f} feat={dt_feat:.2f} "
+                            f"bw={dt_bw:.2f} step={dt_step:.2f} total={dt_total:.2f}"
+                        )
+                        if torch.cuda.is_available():
+                            try:
+                                mem_gb = torch.cuda.max_memory_allocated() / (1024**3)
+                                extra += f"  cuda_max_alloc={mem_gb:.2f}GB"
+                                torch.cuda.reset_peak_memory_stats()
+                            except Exception:
+                                pass
                     print(
                         f"epoch {epoch + 1}/{args.epochs}  video {vi + 1}/{len(vids)}  "
-                        f"{video_id}  loss={loss:.4f}  grad_norm={gradnorm_last:.3f}"
+                        f"{video_id}  loss={loss:.4f}  grad_norm={gradnorm_last:.3f}{extra}"
                     )
 
             # Flush remaining grads if epoch ended mid-accum.
@@ -571,7 +608,8 @@ def main() -> None:
                 f"steps={len(losses)}  skipped_no_frames={skipped_no_frames}  "
                 f"skipped_empty_target={skipped_empty_target}  "
                 f"skipped_missing_frames_dir={skipped_missing_frames_dir}  "
-                f"resolved_nondefault_frames_subdir={skipped_frames_subdir_mismatch}"
+                f"resolved_nondefault_frames_subdir={skipped_frames_subdir_mismatch}  "
+                f"epoch_time_min={(time.time()-t_epoch0)/60.0:.1f}"
             )
 
         out_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
