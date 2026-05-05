@@ -148,6 +148,26 @@ def train_step_vidvrd(
             raise RuntimeError("Model did not return vidvrd_logits (wrong head?)")
         if logits.shape[0] != tgt.shape[0]:
             raise RuntimeError(f"logits rows {logits.shape[0]} != target rows {tgt.shape[0]}")
+        # Fail-fast checks: NaNs/Inf or invalid targets will poison weights (esp. trunk finetune).
+        if not torch.isfinite(logits).all():
+            bad = (~torch.isfinite(logits)).nonzero(as_tuple=False)
+            idx = tuple(int(x) for x in bad[0].tolist()) if bad.numel() else (0, 0)
+            val = float(logits[idx].detach().cpu())
+            raise RuntimeError(
+                f"Non-finite logits detected at index={idx}, value={val}. "
+                f"logits_stats[min,max]=({float(torch.nanmin(logits).detach().cpu()):.4g},"
+                f"{float(torch.nanmax(logits).detach().cpu()):.4g})"
+            )
+        if tgt.numel() and (tgt.dtype != torch.long):
+            raise RuntimeError(f"pred_target must be int64 (LongTensor), got dtype={tgt.dtype}")
+        if tgt.numel():
+            tmin = int(tgt.min().detach().cpu())
+            tmax = int(tgt.max().detach().cpu())
+            if tmin < 0 or tmax >= int(logits.shape[1]):
+                raise RuntimeError(
+                    f"Invalid target ids: min={tmin} max={tmax} but num_classes={int(logits.shape[1])}. "
+                    "Check vocab/pred2id consistency and background id."
+                )
         loss = F.cross_entropy(logits, tgt) * float(accum_scale)
 
     if bool(use_amp) and torch.cuda.is_available():

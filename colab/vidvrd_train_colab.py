@@ -55,6 +55,7 @@ from lib.vidvrd_train_utils import (
     freeze_for_vidvrd_training,
     make_synthetic_vidvrd_entry,
     optimizer_step,
+    eval_step_vidvrd,
     train_step_vidvrd,
     trainable_parameter_groups,
 )
@@ -182,6 +183,19 @@ def main() -> None:
         choices=("train", "test"),
         default="train",
         help="Which VIDVRD split to read from dataset_root.",
+    )
+    ap.add_argument(
+        "--eval_split",
+        type=str,
+        choices=("", "train", "test"),
+        default="",
+        help="Optional split to run eval after each epoch (e.g. test). Empty disables.",
+    )
+    ap.add_argument(
+        "--eval_max_videos",
+        type=int,
+        default=0,
+        help="Max videos for eval pass (0 = all videos in eval_split).",
     )
     ap.add_argument(
         "--max_videos",
@@ -675,6 +689,88 @@ def main() -> None:
                 f"resolved_nondefault_frames_subdir={skipped_frames_subdir_mismatch}  "
                 f"epoch_time_min={(time.time()-t_epoch0)/60.0:.1f}"
             )
+
+            # Optional eval pass (no backward) to monitor overfitting / stability.
+            eval_split = str(getattr(args, "eval_split", "")).strip()
+            if eval_split:
+                eval_json_dir = root / f"{eval_split}_480"
+                if not eval_json_dir.is_dir():
+                    print(f"[eval] skip: eval_json_dir not found: {str(eval_json_dir)!r}")
+                else:
+                    ev_all = _list_video_ids(eval_json_dir)
+                    emv = int(getattr(args, "eval_max_videos", 0))
+                    eval_vids = ev_all if emv <= 0 else ev_all[:emv]
+                    if not eval_vids:
+                        print(f"[eval] skip: no videos under {str(eval_json_dir)!r}")
+                    else:
+                        t_eval0 = time.time()
+                        eval_losses = []
+                        ev_skipped_no_frames = 0
+                        ev_skipped_empty_target = 0
+                        ev_skipped_missing_frames_dir = 0
+                        for evi, ev_video_id in enumerate(eval_vids):
+                            jp = eval_json_dir / f"{ev_video_id}.json"
+                            frames_dir, _frames_sub_used = _resolve_frames_dir(root, eval_split, ev_video_id)
+                            if frames_dir is None:
+                                ev_skipped_missing_frames_dir += 1
+                                continue
+                            vidvrd = json.loads(jp.read_text(encoding="utf-8"))
+                            frame_files = sorted(
+                                [n for n in os.listdir(frames_dir) if n.lower().endswith((".jpg", ".jpeg", ".png"))]
+                            )
+                            meta_fc = int(vidvrd.get("frame_count", len(frame_files)))
+                            fs = max(0, min(frame_start, len(frame_files) - 1, max(0, meta_fc - 1)))
+                            T_use = min(len(frame_files) - fs, meta_fc - fs, int(args.max_frames))
+                            if T_use <= 0:
+                                ev_skipped_no_frames += 1
+                                continue
+
+                            im_data, im_info, _scales = _build_im(
+                                str(frames_dir), frame_files, T_use, device, start_idx=fs
+                            )
+                            entry, pred_target, _skipped = build_training_batch_from_vidvrd(
+                                vidvrd_json=vidvrd,
+                                obj2id=obj2id,  # type: ignore[arg-type]
+                                pred2id=pred2id,  # type: ignore[arg-type]
+                                im_data=im_data,
+                                im_info=im_info,
+                                featurizer=featurizer,
+                                neg_ratio=int(args.neg_ratio),
+                                seed=epoch * 1000 + evi,
+                                frame_start=fs,
+                                category_to_ag_index=category_to_ag,
+                            )
+                            if pred_target.numel() == 0:
+                                ev_skipped_empty_target += 1
+                                continue
+                            ev_loss = eval_step_vidvrd(multi, entry, pred_target, device=device)
+                            eval_losses.append(ev_loss)
+
+                            # CSV: append eval rows (keeps plotting simple; stage="eval").
+                            if csv_path:
+                                with open(csv_path, "a", encoding="utf-8") as f:
+                                    f.write(
+                                        f"{run_id},eval,{epoch+1},{evi+1},{ev_video_id},"
+                                        f"{ev_loss:.6f},0.000000,"
+                                        f"0.0000,0.0000,0.0000,0.0000,0.0000,0.0000\n"
+                                    )
+
+                        if eval_losses:
+                            eval_mean_loss = float(sum(eval_losses) / len(eval_losses))
+                            print(
+                                f"[eval] split={eval_split}  mean_loss={eval_mean_loss:.4f}  "
+                                f"steps={len(eval_losses)}  skipped_no_frames={ev_skipped_no_frames}  "
+                                f"skipped_empty_target={ev_skipped_empty_target}  "
+                                f"skipped_missing_frames_dir={ev_skipped_missing_frames_dir}  "
+                                f"eval_time_min={(time.time()-t_eval0)/60.0:.1f}"
+                            )
+                        else:
+                            print(
+                                f"[eval] split={eval_split}  no eval steps ran  "
+                                f"skipped_no_frames={ev_skipped_no_frames}  "
+                                f"skipped_empty_target={ev_skipped_empty_target}  "
+                                f"skipped_missing_frames_dir={ev_skipped_missing_frames_dir}"
+                            )
 
         # Checkpointing: save best only if improved (persist across runs).
         current_mean = float("inf") if args.synthetic else float(mean_loss)  # type: ignore[name-defined]
