@@ -35,6 +35,7 @@ import random
 import sys
 import time
 import zipfile
+import copy
 from pathlib import Path
 
 import torch
@@ -284,6 +285,29 @@ def main() -> None:
     ap.add_argument("--accum_steps", type=int, default=1, help="Gradient accumulation steps (videos).")
     ap.add_argument("--grad_clip", type=float, default=5.0, help="Clip grad norm (0 disables).")
     ap.add_argument(
+        "--nonfinite_policy",
+        type=str,
+        choices=("raise", "skip_video", "skip_step", "rollback_lr"),
+        default="rollback_lr",
+        help=(
+            "What to do when NaN/Inf is detected (logits/entry/grads/weights). "
+            "'raise' aborts; 'skip_video' skips that video; 'skip_step' zeros grads and continues; "
+            "'rollback_lr' restores last-good weights, drops LR, zeros grads, and continues."
+        ),
+    )
+    ap.add_argument(
+        "--lr_drop_factor",
+        type=float,
+        default=0.2,
+        help="When nonfinite_policy=rollback_lr, multiply all optimizer LRs by this factor (e.g. 0.2).",
+    )
+    ap.add_argument(
+        "--lr_drop_min",
+        type=float,
+        default=1e-7,
+        help="Floor for LR after repeated drops (rollback_lr policy).",
+    )
+    ap.add_argument(
         "--profile_every",
         type=int,
         default=0,
@@ -459,9 +483,33 @@ def main() -> None:
             p for n, p in multi.sttran.named_parameters()
             if p.requires_grad and (not n.startswith(("a_rel_compress.", "s_rel_compress.", "c_rel_compress.")))
         ]
-    groups = [{"params": head_params, "lr": float(args.lr_head)}]
+    # Use weight-decay-safe grouping (avoid decaying LayerNorm/bias terms).
+    # This reduces rare but catastrophic instabilities when unfreezing the trunk.
+    def _split_decay(params_with_names: list[tuple[str, torch.nn.Parameter]]):
+        decay, no_decay = [], []
+        for n, p in params_with_names:
+            if not p.requires_grad:
+                continue
+            if n.endswith(".bias") or (".norm" in n.lower()) or ("layernorm" in n.lower()) or ("ln" in n.lower()):
+                no_decay.append(p)
+            else:
+                decay.append(p)
+        return decay, no_decay
+
+    head_named = [(f"vidvrd_head.{n}", p) for n, p in multi.vidvrd_head.named_parameters() if p.requires_grad]
+    head_decay, head_no_decay = _split_decay(head_named)
+    groups = []
+    if head_decay:
+        groups.append({"params": head_decay, "lr": float(args.lr_head), "weight_decay": float(args.weight_decay)})
+    if head_no_decay:
+        groups.append({"params": head_no_decay, "lr": float(args.lr_head), "weight_decay": 0.0})
     if trunk_params:
-        groups.append({"params": trunk_params, "lr": float(args.lr_trunk)})
+        trunk_named = [(f"sttran.{n}", p) for n, p in multi.sttran.named_parameters() if p.requires_grad]
+        trunk_decay, trunk_no_decay = _split_decay(trunk_named)
+        if trunk_decay:
+            groups.append({"params": trunk_decay, "lr": float(args.lr_trunk), "weight_decay": float(args.weight_decay)})
+        if trunk_no_decay:
+            groups.append({"params": trunk_no_decay, "lr": float(args.lr_trunk), "weight_decay": 0.0})
 
     trainable = sum(p.numel() for p in multi.parameters() if p.requires_grad)
     print(
@@ -470,11 +518,12 @@ def main() -> None:
     )
 
     if args.optimizer == "adamw":
-        optimizer = torch.optim.AdamW(groups, weight_decay=float(args.weight_decay))
+        optimizer = torch.optim.AdamW(groups)
     elif args.optimizer == "adam":
-        optimizer = torch.optim.Adam(groups, weight_decay=float(args.weight_decay))
+        optimizer = torch.optim.Adam(groups)
     else:
-        optimizer = torch.optim.SGD(groups, momentum=float(args.momentum), weight_decay=float(args.weight_decay))
+        # SGD respects per-group weight_decay too.
+        optimizer = torch.optim.SGD(groups, momentum=float(args.momentum))
 
     use_amp = bool(args.amp) and torch.cuda.is_available()
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -579,6 +628,9 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             step_in_accum = 0
             gradnorm_last = 0.0
+            # Keep a rollback point for catastrophic non-finite events.
+            last_good_state = copy.deepcopy(multi.state_dict())
+            lr_drop_count = 0
             t_epoch0 = time.time()
             for vi, video_id in enumerate(vids):
                 t0 = time.time()
@@ -648,22 +700,55 @@ def main() -> None:
                         accum_scale=1.0 / float(accum_steps),
                     )
                 except Exception as e:
-                    # Add context for debugging NaNs/Infs (most commonly trunk stage).
-                    raise RuntimeError(
-                        f"[train_fail] stage={args.stage} epoch={epoch+1} "
-                        f"video_idx={vi+1}/{len(vids)} video_id={video_id}: {e}"
-                    ) from e
+                    msg = f"[train_fail] stage={args.stage} epoch={epoch+1} video_idx={vi+1}/{len(vids)} video_id={video_id}: {e}"
+                    policy = str(getattr(args, "nonfinite_policy", "raise"))
+                    if policy == "raise":
+                        raise RuntimeError(msg) from e
+                    print(msg)
+                    # Skip this video entirely (do not accumulate grads).
+                    if policy in ("skip_video", "skip_step", "rollback_lr"):
+                        optimizer.zero_grad(set_to_none=True)
+                        step_in_accum = 0
+                        continue
+                    raise RuntimeError(msg) from e
                 t_bw = time.time()
                 losses.append(loss)
                 step_in_accum += 1
                 if step_in_accum >= accum_steps:
-                    gradnorm_last = optimizer_step(
-                        optimizer=optimizer,
-                        multi=multi,
-                        use_amp=use_amp,
-                        scaler=scaler,
-                        grad_clip=float(args.grad_clip),
-                    )
+                    try:
+                        gradnorm_last = optimizer_step(
+                            optimizer=optimizer,
+                            multi=multi,
+                            use_amp=use_amp,
+                            scaler=scaler,
+                            grad_clip=float(args.grad_clip),
+                        )
+                        last_good_state = copy.deepcopy(multi.state_dict())
+                    except Exception as e:
+                        msg = (
+                            f"[step_fail] stage={args.stage} epoch={epoch+1} "
+                            f"video_idx={vi+1}/{len(vids)} video_id={video_id}: {e}"
+                        )
+                        policy = str(getattr(args, "nonfinite_policy", "raise"))
+                        if policy == "raise":
+                            raise RuntimeError(msg) from e
+                        print(msg)
+                        if policy == "skip_step":
+                            optimizer.zero_grad(set_to_none=True)
+                        elif policy == "rollback_lr":
+                            # Restore last-good weights, drop LR, clear grads.
+                            multi.load_state_dict(last_good_state, strict=True)
+                            drop = float(getattr(args, "lr_drop_factor", 0.2))
+                            floor = float(getattr(args, "lr_drop_min", 1e-7))
+                            for g in optimizer.param_groups:
+                                g["lr"] = max(floor, float(g.get("lr", 0.0)) * drop)
+                            lr_drop_count += 1
+                            optimizer.zero_grad(set_to_none=True)
+                            print(
+                                f"[rollback_lr] lr_drop_count={lr_drop_count} "
+                                f"new_lrs={[float(g['lr']) for g in optimizer.param_groups]}"
+                            )
+                        # Continue training after handling.
                     step_in_accum = 0
                 t_step = time.time()
                 if vi % log_every == 0 or vi == len(vids) - 1:

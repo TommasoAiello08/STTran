@@ -223,6 +223,20 @@ def optimizer_step(
       total_grad_norm (L2) if grad_clip > 0 else 0.0
     """
     total_norm = 0.0
+
+    # Detect non-finite grads early (before step) — these usually lead to NaN weights.
+    for name, p in multi.named_parameters():
+        if not p.requires_grad:
+            continue
+        if p.grad is None:
+            continue
+        if not torch.isfinite(p.grad).all():
+            bad = (~torch.isfinite(p.grad)).nonzero(as_tuple=False)
+            idx = tuple(int(x) for x in bad[0].tolist()) if bad.numel() else (0,)
+            vv = p.grad[idx]
+            val = float(vv.detach().flatten()[0].cpu()) if vv.numel() else float("nan")
+            raise RuntimeError(f"Non-finite gradient in param={name} at index={idx}, value={val}")
+
     if grad_clip and grad_clip > 0:
         if bool(use_amp) and torch.cuda.is_available():
             if scaler is None:
@@ -240,6 +254,18 @@ def optimizer_step(
     else:
         optimizer.step()
     optimizer.zero_grad(set_to_none=True)
+
+    # Detect non-finite weights immediately after step (most common trunk failure mode).
+    for name, p in multi.named_parameters():
+        if not p.requires_grad:
+            continue
+        if not torch.isfinite(p).all():
+            bad = (~torch.isfinite(p)).nonzero(as_tuple=False)
+            idx = tuple(int(x) for x in bad[0].tolist()) if bad.numel() else (0,)
+            vv = p[idx]
+            val = float(vv.detach().flatten()[0].cpu()) if vv.numel() else float("nan")
+            raise RuntimeError(f"Non-finite weight in param={name} at index={idx}, value={val} (post-step)")
+
     return total_norm
 
 
