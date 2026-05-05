@@ -125,6 +125,10 @@ def train_step_vidvrd(
     optimizer: torch.optim.Optimizer,
     *,
     device: torch.device,
+    use_amp: bool = False,
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
+    grad_clip: float = 0.0,
+    accum_scale: float = 1.0,
 ) -> float:
     """
     One optimization step on the VIDVRD head (``head="vidvrd"``).
@@ -136,15 +140,60 @@ def train_step_vidvrd(
     multi.train()
     entry_dev = {k: v.to(device) if torch.is_tensor(v) else v for k, v in entry.items()}
     tgt = pred_target.to(device)
-    optimizer.zero_grad(set_to_none=True)
-    out = multi(entry_dev, head="vidvrd")
-    logits = out.vidvrd_logits
-    if logits is None:
-        raise RuntimeError("Model did not return vidvrd_logits (wrong head?)")
-    loss = F.cross_entropy(logits, tgt)
-    loss.backward()
-    optimizer.step()
+    out_ctx = torch.cuda.amp.autocast(enabled=bool(use_amp) and torch.cuda.is_available())
+    with out_ctx:
+        out = multi(entry_dev, head="vidvrd")
+        logits = out.vidvrd_logits
+        if logits is None:
+            raise RuntimeError("Model did not return vidvrd_logits (wrong head?)")
+        if logits.shape[0] != tgt.shape[0]:
+            raise RuntimeError(f"logits rows {logits.shape[0]} != target rows {tgt.shape[0]}")
+        loss = F.cross_entropy(logits, tgt) * float(accum_scale)
+
+    if bool(use_amp) and torch.cuda.is_available():
+        if scaler is None:
+            raise TypeError("use_amp=True requires a GradScaler instance via scaler=...")
+        scaler.scale(loss).backward()
+    else:
+        loss.backward()
+
+    # Caller controls optimizer stepping to allow gradient accumulation.
     return float(loss.detach().cpu())
+
+
+def optimizer_step(
+    *,
+    optimizer: torch.optim.Optimizer,
+    multi: nn.Module,
+    use_amp: bool = False,
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
+    grad_clip: float = 0.0,
+) -> float:
+    """
+    Perform an optimizer step + optional grad clipping.
+
+    Returns:
+      total_grad_norm (L2) if grad_clip > 0 else 0.0
+    """
+    total_norm = 0.0
+    if grad_clip and grad_clip > 0:
+        if bool(use_amp) and torch.cuda.is_available():
+            if scaler is None:
+                raise TypeError("use_amp=True requires scaler=GradScaler")
+            scaler.unscale_(optimizer)
+        total_norm = float(
+            torch.nn.utils.clip_grad_norm_(multi.parameters(), max_norm=float(grad_clip), norm_type=2).detach().cpu()
+        )
+
+    if bool(use_amp) and torch.cuda.is_available():
+        if scaler is None:
+            raise TypeError("use_amp=True requires scaler=GradScaler")
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    return total_norm
 
 
 @torch.no_grad()

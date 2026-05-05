@@ -53,6 +53,7 @@ from lib.vidvrd_train_utils import (
     build_training_batch_from_vidvrd,
     freeze_for_vidvrd_training,
     make_synthetic_vidvrd_entry,
+    optimizer_step,
     train_step_vidvrd,
     trainable_parameter_groups,
 )
@@ -226,7 +227,22 @@ def main() -> None:
         help="Negatives per positive (approx) inside build_vidvrd_predcls_entry.",
     )
     ap.add_argument("--epochs", type=int, default=1)
-    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument(
+        "--stage",
+        type=str,
+        choices=("head", "trunk"),
+        default="head",
+        help="Training stage: head-only or trunk+head (uses different LR defaults).",
+    )
+    ap.add_argument("--lr", type=float, default=0.0, help="Deprecated single LR; use --lr_head/--lr_trunk.")
+    ap.add_argument("--lr_head", type=float, default=1e-3, help="Learning rate for vidvrd_head.")
+    ap.add_argument("--lr_trunk", type=float, default=3e-5, help="Learning rate for STTran trunk (when stage=trunk).")
+    ap.add_argument("--weight_decay", type=float, default=1e-4)
+    ap.add_argument("--optimizer", type=str, default="adamw", choices=("adamw", "adam", "sgd"))
+    ap.add_argument("--momentum", type=float, default=0.9, help="SGD momentum.")
+    ap.add_argument("--amp", action="store_true", help="Use mixed precision (CUDA only).")
+    ap.add_argument("--accum_steps", type=int, default=1, help="Gradient accumulation steps (videos).")
+    ap.add_argument("--grad_clip", type=float, default=5.0, help="Clip grad norm (0 disables).")
     ap.add_argument("--num_predicates", type=int, default=132)
     ap.add_argument(
         "--synthetic",
@@ -250,7 +266,7 @@ def main() -> None:
     ap.add_argument(
         "--train_sttran_trunk",
         action="store_true",
-        help="Also fine-tune STTran trunk (still freezes AG readout linears).",
+        help="Legacy flag. Prefer --stage trunk. If set, same as --stage trunk.",
     )
     ap.add_argument(
         "--save_mode",
@@ -260,6 +276,12 @@ def main() -> None:
         help="Checkpoint style (see lib/vidvrd_checkpoint.py).",
     )
     args = ap.parse_args()
+    if float(args.lr) and float(args.lr) > 0:
+        print("[warn] --lr is deprecated; using it as lr_head and leaving lr_trunk unchanged.")
+        args.lr_head = float(args.lr)
+
+    if bool(args.train_sttran_trunk):
+        args.stage = "trunk"
 
     device = _pick_device()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -318,16 +340,42 @@ def main() -> None:
     multi = _build_model(
         device, args.base_ckpt, num_predicates, random_init=random_init
     )
+    train_trunk = (str(args.stage) == "trunk")
     freeze_for_vidvrd_training(
         multi,
         train_vidvrd_head=True,
-        train_sttran_trunk=args.train_sttran_trunk,
+        train_sttran_trunk=train_trunk,
         train_ag_readouts=False,
     )
-    params = trainable_parameter_groups(multi)
-    print(f"device={device}  trainable params={sum(p.numel() for p in params)}")
 
-    optimizer = torch.optim.Adam(params, lr=args.lr)
+    # Parameter groups for stage-specific LRs.
+    head_params = [p for p in multi.vidvrd_head.parameters() if p.requires_grad]
+    trunk_params = []
+    if train_trunk:
+        trunk_params = [
+            p for n, p in multi.sttran.named_parameters()
+            if p.requires_grad and (not n.startswith(("a_rel_compress.", "s_rel_compress.", "c_rel_compress.")))
+        ]
+    groups = [{"params": head_params, "lr": float(args.lr_head)}]
+    if trunk_params:
+        groups.append({"params": trunk_params, "lr": float(args.lr_trunk)})
+
+    trainable = sum(p.numel() for p in multi.parameters() if p.requires_grad)
+    print(
+        f"device={device}  stage={args.stage}  trainable_params={trainable}  "
+        f"lr_head={float(args.lr_head):.3g}  lr_trunk={float(args.lr_trunk):.3g}"
+    )
+
+    if args.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(groups, weight_decay=float(args.weight_decay))
+    elif args.optimizer == "adam":
+        optimizer = torch.optim.Adam(groups, weight_decay=float(args.weight_decay))
+    else:
+        optimizer = torch.optim.SGD(groups, momentum=float(args.momentum), weight_decay=float(args.weight_decay))
+
+    use_amp = bool(args.amp) and torch.cuda.is_available()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    accum_steps = max(1, int(args.accum_steps))
 
     num_obj_classes = len(load_ag_label_bundle()[0])
 
@@ -372,10 +420,22 @@ def main() -> None:
                 num_predicates=args.num_predicates,
                 seed=epoch,
             )
+            optimizer.zero_grad(set_to_none=True)
             loss = train_step_vidvrd(
-                multi, entry, pred_target, optimizer, device=device
+                multi,
+                entry,
+                pred_target,
+                optimizer,
+                device=device,
+                use_amp=use_amp,
+                scaler=scaler,
+                grad_clip=float(args.grad_clip),
+                accum_scale=1.0,
             )
-            print(f"epoch {epoch + 1}/{args.epochs}  synthetic_loss={loss:.4f}")
+            gn = optimizer_step(
+                optimizer=optimizer, multi=multi, use_amp=use_amp, scaler=scaler, grad_clip=float(args.grad_clip)
+            )
+            print(f"epoch {epoch + 1}/{args.epochs}  synthetic_loss={loss:.4f}  grad_norm={gn:.3f}")
         else:
             assert json_dir is not None and root is not None and featurizer is not None and _build_im is not None
 
@@ -412,6 +472,9 @@ def main() -> None:
             skipped_missing_frames_dir = 0
             skipped_frames_subdir_mismatch = 0
             frame_start = max(0, int(args.frame_start))
+            optimizer.zero_grad(set_to_none=True)
+            step_in_accum = 0
+            gradnorm_last = 0.0
             for vi, video_id in enumerate(vids):
                 jp = json_dir / f"{video_id}.json"
                 frames_dir, frames_sub_used = _resolve_frames_dir(root, str(args.split), video_id)
@@ -463,13 +526,43 @@ def main() -> None:
                     if vi % log_every == 0:
                         print(f"[skip] empty pred_target (no pairs in window): {video_id}")
                     continue
-                loss = train_step_vidvrd(multi, entry, pred_target, optimizer, device=device)
+                loss = train_step_vidvrd(
+                    multi,
+                    entry,
+                    pred_target,
+                    optimizer,
+                    device=device,
+                    use_amp=use_amp,
+                    scaler=scaler,
+                    grad_clip=float(args.grad_clip),
+                    accum_scale=1.0 / float(accum_steps),
+                )
                 losses.append(loss)
+                step_in_accum += 1
+                if step_in_accum >= accum_steps:
+                    gradnorm_last = optimizer_step(
+                        optimizer=optimizer,
+                        multi=multi,
+                        use_amp=use_amp,
+                        scaler=scaler,
+                        grad_clip=float(args.grad_clip),
+                    )
+                    step_in_accum = 0
                 if vi % log_every == 0 or vi == len(vids) - 1:
                     print(
                         f"epoch {epoch + 1}/{args.epochs}  video {vi + 1}/{len(vids)}  "
-                        f"{video_id}  loss={loss:.4f}"
+                        f"{video_id}  loss={loss:.4f}  grad_norm={gradnorm_last:.3f}"
                     )
+
+            # Flush remaining grads if epoch ended mid-accum.
+            if step_in_accum > 0:
+                gradnorm_last = optimizer_step(
+                    optimizer=optimizer,
+                    multi=multi,
+                    use_amp=use_amp,
+                    scaler=scaler,
+                    grad_clip=float(args.grad_clip),
+                )
 
             if not losses:
                 raise SystemExit("No training steps were run (no usable videos/frames).")
