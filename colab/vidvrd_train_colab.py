@@ -308,6 +308,15 @@ def main() -> None:
         help="Floor for LR after repeated drops (rollback_lr policy).",
     )
     ap.add_argument(
+        "--freeze_trunk_prefix",
+        type=str,
+        default="",
+        help=(
+            "Optional comma-separated parameter name prefixes (within multi.sttran) to keep frozen "
+            "even in --stage trunk. Example: glocal_transformer.local_attention.layers.0.self_attn"
+        ),
+    )
+    ap.add_argument(
         "--profile_every",
         type=int,
         default=0,
@@ -474,6 +483,16 @@ def main() -> None:
         train_sttran_trunk=train_trunk,
         train_ag_readouts=False,
     )
+    if train_trunk and str(getattr(args, "freeze_trunk_prefix", "")).strip():
+        prefixes = [s.strip() for s in str(args.freeze_trunk_prefix).split(",") if s.strip()]
+        if prefixes:
+            frozen = 0
+            for n, p in multi.sttran.named_parameters():
+                if any(n.startswith(pref) for pref in prefixes):
+                    if p.requires_grad:
+                        p.requires_grad = False
+                        frozen += 1
+            print(f"[trunk_freeze] frozen_params={frozen} prefixes={prefixes}")
 
     # Parameter groups for stage-specific LRs.
     head_params = [p for p in multi.vidvrd_head.parameters() if p.requires_grad]
@@ -787,13 +806,38 @@ def main() -> None:
 
             # Flush remaining grads if epoch ended mid-accum.
             if step_in_accum > 0:
-                gradnorm_last = optimizer_step(
-                    optimizer=optimizer,
-                    multi=multi,
-                    use_amp=use_amp,
-                    scaler=scaler,
-                    grad_clip=float(args.grad_clip),
-                )
+                try:
+                    gradnorm_last = optimizer_step(
+                        optimizer=optimizer,
+                        multi=multi,
+                        use_amp=use_amp,
+                        scaler=scaler,
+                        grad_clip=float(args.grad_clip),
+                    )
+                    last_good_state = copy.deepcopy(multi.state_dict())
+                except Exception as e:
+                    msg = (
+                        f"[flush_step_fail] stage={args.stage} epoch={epoch+1} "
+                        f"video_idx={len(vids)}/{len(vids)}: {e}"
+                    )
+                    policy = str(getattr(args, "nonfinite_policy", "raise"))
+                    if policy == "raise":
+                        raise RuntimeError(msg) from e
+                    print(msg)
+                    if policy == "skip_step":
+                        optimizer.zero_grad(set_to_none=True)
+                    elif policy == "rollback_lr":
+                        multi.load_state_dict(last_good_state, strict=True)
+                        drop = float(getattr(args, "lr_drop_factor", 0.2))
+                        floor = float(getattr(args, "lr_drop_min", 1e-7))
+                        for g in optimizer.param_groups:
+                            g["lr"] = max(floor, float(g.get("lr", 0.0)) * drop)
+                        lr_drop_count += 1
+                        optimizer.zero_grad(set_to_none=True)
+                        print(
+                            f"[rollback_lr] lr_drop_count={lr_drop_count} "
+                            f"new_lrs={[float(g['lr']) for g in optimizer.param_groups]}"
+                        )
 
             if not losses:
                 raise SystemExit("No training steps were run (no usable videos/frames).")
