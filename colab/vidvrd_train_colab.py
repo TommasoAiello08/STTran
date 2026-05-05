@@ -635,17 +635,24 @@ def main() -> None:
                     if vi % log_every == 0:
                         print(f"[skip] empty pred_target (no pairs in window): {video_id}")
                     continue
-                loss = train_step_vidvrd(
-                    multi,
-                    entry,
-                    pred_target,
-                    optimizer,
-                    device=device,
-                    use_amp=use_amp,
-                    scaler=scaler,
-                    grad_clip=float(args.grad_clip),
-                    accum_scale=1.0 / float(accum_steps),
-                )
+                try:
+                    loss = train_step_vidvrd(
+                        multi,
+                        entry,
+                        pred_target,
+                        optimizer,
+                        device=device,
+                        use_amp=use_amp,
+                        scaler=scaler,
+                        grad_clip=float(args.grad_clip),
+                        accum_scale=1.0 / float(accum_steps),
+                    )
+                except Exception as e:
+                    # Add context for debugging NaNs/Infs (most commonly trunk stage).
+                    raise RuntimeError(
+                        f"[train_fail] stage={args.stage} epoch={epoch+1} "
+                        f"video_idx={vi+1}/{len(vids)} video_id={video_id}: {e}"
+                    ) from e
                 t_bw = time.time()
                 losses.append(loss)
                 step_in_accum += 1

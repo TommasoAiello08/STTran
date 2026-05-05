@@ -140,6 +140,27 @@ def train_step_vidvrd(
     multi.train()
     entry_dev = {k: v.to(device) if torch.is_tensor(v) else v for k, v in entry.items()}
     tgt = pred_target.to(device)
+    # Entry sanity checks: if the detector/featurizer emits NaNs/Infs, trunk training will
+    # quickly poison weights. Do lightweight checks on the most critical tensors.
+    for k in ("boxes", "features", "union_feat", "spatial_masks"):
+        v = entry_dev.get(k, None)
+        if v is None or (not torch.is_tensor(v)):
+            continue
+        if not torch.isfinite(v).all():
+            bad = (~torch.isfinite(v)).nonzero(as_tuple=False)
+            idx = tuple(int(x) for x in bad[0].tolist()) if bad.numel() else (0,)
+            vv = v[idx]
+            val = float(vv.detach().flatten()[0].cpu()) if vv.numel() else float("nan")
+            finite = v[torch.isfinite(v)]
+            if finite.numel():
+                vmin = float(finite.min().detach().cpu())
+                vmax = float(finite.max().detach().cpu())
+                stats = f"({vmin:.4g},{vmax:.4g})"
+            else:
+                stats = "(no_finite_values)"
+            raise RuntimeError(
+                f"Non-finite entry tensor: {k} at index={idx}, value={val}. finite_stats[min,max]={stats}"
+            )
     out_ctx = torch.cuda.amp.autocast(enabled=bool(use_amp) and torch.cuda.is_available())
     with out_ctx:
         out = multi(entry_dev, head="vidvrd")
