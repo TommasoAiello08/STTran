@@ -153,10 +153,16 @@ def train_step_vidvrd(
             bad = (~torch.isfinite(logits)).nonzero(as_tuple=False)
             idx = tuple(int(x) for x in bad[0].tolist()) if bad.numel() else (0, 0)
             val = float(logits[idx].detach().cpu())
+            finite = logits[torch.isfinite(logits)]
+            if finite.numel():
+                lmin = float(finite.min().detach().cpu())
+                lmax = float(finite.max().detach().cpu())
+                stats = f"({lmin:.4g},{lmax:.4g})"
+            else:
+                stats = "(no_finite_values)"
             raise RuntimeError(
                 f"Non-finite logits detected at index={idx}, value={val}. "
-                f"logits_stats[min,max]=({float(torch.nanmin(logits).detach().cpu()):.4g},"
-                f"{float(torch.nanmax(logits).detach().cpu()):.4g})"
+                f"logits_stats[min,max]={stats}"
             )
         if tgt.numel() and (tgt.dtype != torch.long):
             raise RuntimeError(f"pred_target must be int64 (LongTensor), got dtype={tgt.dtype}")
