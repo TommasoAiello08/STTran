@@ -264,6 +264,18 @@ def main() -> None:
         help="Max frames to load per video (speed).",
     )
     ap.add_argument(
+        "--max_frames_warmup_epochs",
+        type=int,
+        default=0,
+        help="If >0, use --max_frames_warmup_value for the first N epochs, then switch to --max_frames.",
+    )
+    ap.add_argument(
+        "--max_frames_warmup_value",
+        type=int,
+        default=16,
+        help="Warmup max_frames value used for the first --max_frames_warmup_epochs epochs.",
+    )
+    ap.add_argument(
         "--neg_ratio",
         type=int,
         default=3,
@@ -790,6 +802,10 @@ def main() -> None:
             warmup_epochs = max(0, int(getattr(args, "neg_ratio_warmup_epochs", 0)))
             warmup_value = int(getattr(args, "neg_ratio_warmup_value", 1))
             neg_ratio_epoch = warmup_value if int(epoch) < warmup_epochs else int(args.neg_ratio)
+
+            mf_warmup_epochs = max(0, int(getattr(args, "max_frames_warmup_epochs", 0)))
+            mf_warmup_value = int(getattr(args, "max_frames_warmup_value", 16))
+            max_frames_epoch = mf_warmup_value if int(epoch) < mf_warmup_epochs else int(args.max_frames)
             optimizer.zero_grad(set_to_none=True)
             step_in_accum = 0
             gradnorm_last = 0.0
@@ -853,7 +869,7 @@ def main() -> None:
                 t_feat = None
                 for cand_i, fs_cand in enumerate(frame_start_candidates):
                     fs = max(0, min(int(fs_cand), len(frame_files) - 1, max(0, meta_fc - 1)))
-                    T_use = min(len(frame_files) - fs, meta_fc - fs, int(args.max_frames))
+                    T_use = min(len(frame_files) - fs, meta_fc - fs, int(max_frames_epoch))
                     if T_use <= 0:
                         continue
                     im_data, im_info, _scales = _build_im(
@@ -1083,7 +1099,8 @@ def main() -> None:
                             )
                             meta_fc = int(vidvrd.get("frame_count", len(frame_files)))
                             fs = max(0, min(frame_start, len(frame_files) - 1, max(0, meta_fc - 1)))
-                            T_use = min(len(frame_files) - fs, meta_fc - fs, int(args.max_frames))
+                            # Keep eval comparable to train windowing in this epoch.
+                            T_use = min(len(frame_files) - fs, meta_fc - fs, int(max_frames_epoch))
                             if T_use <= 0:
                                 ev_skipped_no_frames += 1
                                 continue
