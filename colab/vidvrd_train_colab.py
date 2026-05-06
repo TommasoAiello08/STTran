@@ -271,9 +271,15 @@ def main() -> None:
     ap.add_argument(
         "--stage",
         type=str,
-        choices=("head", "trunk"),
+        choices=("head", "trunk", "joint"),
         default="head",
-        help="Training stage: head-only or trunk+head (uses different LR defaults).",
+        help=(
+            "Training stage: "
+            "'head' trains VIDVRD head only; "
+            "'trunk' trains head+STTran trunk; "
+            "'joint' also trains head+trunk but can optionally warm up head-only first "
+            "(see --joint_warmup_epochs)."
+        ),
     )
     ap.add_argument("--lr", type=float, default=0.0, help="Deprecated single LR; use --lr_head/--lr_trunk.")
     ap.add_argument("--lr_head", type=float, default=1e-3, help="Learning rate for vidvrd_head.")
@@ -314,6 +320,16 @@ def main() -> None:
         help=(
             "Optional comma-separated parameter name prefixes (within multi.sttran) to keep frozen "
             "even in --stage trunk. Example: glocal_transformer.local_attention.layers.0.self_attn"
+        ),
+    )
+    ap.add_argument(
+        "--joint_warmup_epochs",
+        type=int,
+        default=0,
+        help=(
+            "Only used when --stage joint. For the first N epochs, trains head-only (trunk frozen), "
+            "then unfreezes the trunk while keeping the same optimizer parameter groups. "
+            "Set 0 to train head+trunk from the start."
         ),
     )
     ap.add_argument(
@@ -476,54 +492,81 @@ def main() -> None:
     multi = _build_model(
         device, args.base_ckpt, num_predicates, random_init=random_init
     )
-    train_trunk = (str(args.stage) == "trunk")
-    freeze_for_vidvrd_training(
-        multi,
-        train_vidvrd_head=True,
-        train_sttran_trunk=train_trunk,
-        train_ag_readouts=False,
-    )
-    if train_trunk and str(getattr(args, "freeze_trunk_prefix", "")).strip():
-        prefixes = [s.strip() for s in str(args.freeze_trunk_prefix).split(",") if s.strip()]
-        if prefixes:
-            frozen = 0
-            for n, p in multi.sttran.named_parameters():
-                if any(n.startswith(pref) for pref in prefixes):
-                    if p.requires_grad:
-                        p.requires_grad = False
-                        frozen += 1
-            print(f"[trunk_freeze] frozen_params={frozen} prefixes={prefixes}")
+    stage = str(args.stage)
+    is_joint = (stage == "joint")
+    joint_warmup = max(0, int(getattr(args, "joint_warmup_epochs", 0)))
+
+    # Prefix-based trunk freezes should be respected both in trunk stage and after joint unfreeze.
+    trunk_freeze_prefixes = [s.strip() for s in str(getattr(args, "freeze_trunk_prefix", "")).split(",") if s.strip()]
+
+    def _apply_trunk_prefix_freeze() -> None:
+        if not trunk_freeze_prefixes:
+            return
+        frozen = 0
+        for n, p in multi.sttran.named_parameters():
+            if any(n.startswith(pref) for pref in trunk_freeze_prefixes):
+                if p.requires_grad:
+                    p.requires_grad = False
+                    frozen += 1
+        if frozen:
+            print(f"[trunk_freeze] frozen_params={frozen} prefixes={trunk_freeze_prefixes}")
+
+    def _set_train_state_for_epoch(epoch_idx: int) -> bool:
+        """
+        Returns whether the trunk is trainable for this epoch (requires_grad True for eligible params).
+        """
+        if stage == "head":
+            train_trunk_now = False
+        elif stage == "trunk":
+            train_trunk_now = True
+        else:
+            # joint: optional head-only warmup
+            train_trunk_now = (epoch_idx >= joint_warmup)
+
+        freeze_for_vidvrd_training(
+            multi,
+            train_vidvrd_head=True,
+            train_sttran_trunk=bool(train_trunk_now),
+            train_ag_readouts=False,
+        )
+        if (stage in ("trunk", "joint")) and trunk_freeze_prefixes:
+            _apply_trunk_prefix_freeze()
+        return bool(train_trunk_now)
+
+    # Initialize requires_grad state for epoch 0.
+    _ = _set_train_state_for_epoch(0)
 
     # Parameter groups for stage-specific LRs.
-    head_params = [p for p in multi.vidvrd_head.parameters() if p.requires_grad]
-    trunk_params = []
-    if train_trunk:
-        trunk_params = [
-            p for n, p in multi.sttran.named_parameters()
-            if p.requires_grad and (not n.startswith(("a_rel_compress.", "s_rel_compress.", "c_rel_compress.")))
-        ]
+    # IMPORTANT: for --stage joint with warmup, we still want trunk params inside the optimizer
+    # groups even if they start frozen. So we build groups from module structure, not current
+    # requires_grad state.
+    head_params = [p for _n, p in multi.vidvrd_head.named_parameters()]
+    trunk_params = [
+        p
+        for n, p in multi.sttran.named_parameters()
+        if (not n.startswith(("a_rel_compress.", "s_rel_compress.", "c_rel_compress.")))
+    ]
     # Use weight-decay-safe grouping (avoid decaying LayerNorm/bias terms).
     # This reduces rare but catastrophic instabilities when unfreezing the trunk.
     def _split_decay(params_with_names: list[tuple[str, torch.nn.Parameter]]):
         decay, no_decay = [], []
         for n, p in params_with_names:
-            if not p.requires_grad:
-                continue
             if n.endswith(".bias") or (".norm" in n.lower()) or ("layernorm" in n.lower()) or ("ln" in n.lower()):
                 no_decay.append(p)
             else:
                 decay.append(p)
         return decay, no_decay
 
-    head_named = [(f"vidvrd_head.{n}", p) for n, p in multi.vidvrd_head.named_parameters() if p.requires_grad]
+    head_named = [(f"vidvrd_head.{n}", p) for n, p in multi.vidvrd_head.named_parameters()]
     head_decay, head_no_decay = _split_decay(head_named)
     groups = []
     if head_decay:
         groups.append({"params": head_decay, "lr": float(args.lr_head), "weight_decay": float(args.weight_decay)})
     if head_no_decay:
         groups.append({"params": head_no_decay, "lr": float(args.lr_head), "weight_decay": 0.0})
-    if trunk_params:
-        trunk_named = [(f"sttran.{n}", p) for n, p in multi.sttran.named_parameters() if p.requires_grad]
+    if trunk_params and (stage in ("trunk", "joint")):
+        trunk_named = [(f"sttran.{n}", p) for n, p in multi.sttran.named_parameters()
+                       if (not n.startswith(("a_rel_compress.", "s_rel_compress.", "c_rel_compress.")))]
         trunk_decay, trunk_no_decay = _split_decay(trunk_named)
         if trunk_decay:
             groups.append({"params": trunk_decay, "lr": float(args.lr_trunk), "weight_decay": float(args.weight_decay)})
@@ -585,6 +628,13 @@ def main() -> None:
 
     # 3) Training loop — replace synthetic block with your DataLoader.
     for epoch in range(args.epochs):
+        # For --stage joint, optionally warm up head-only then unfreeze trunk.
+        # Re-apply requires_grad settings each epoch to reflect the schedule.
+        trunk_trainable = _set_train_state_for_epoch(int(epoch))
+        if is_joint:
+            phase = "warmup_head_only" if (not trunk_trainable) else "joint_head+trunk"
+            trainable_now = sum(p.numel() for p in multi.parameters() if p.requires_grad)
+            print(f"[joint] epoch={epoch + 1}/{args.epochs} phase={phase} trainable_params={trainable_now}")
         if args.synthetic:
             entry, pred_target = make_synthetic_vidvrd_entry(
                 device=device,
