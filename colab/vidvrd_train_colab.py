@@ -728,7 +728,18 @@ def main() -> None:
         if is_joint:
             phase = "warmup_head_only" if (not trunk_trainable) else "joint_head+trunk"
             trainable_now = sum(p.numel() for p in multi.parameters() if p.requires_grad)
-            print(f"[joint] epoch={epoch_global} (run_epoch={epoch + 1}/{args.epochs}) phase={phase} trainable_params={trainable_now}")
+            sttran_tensors_req = sum(1 for _n, p in multi.sttran.named_parameters() if p.requires_grad)
+            print(
+                f"[joint] epoch={epoch_global} (run_epoch={epoch + 1}/{args.epochs}) phase={phase} "
+                f"trainable_scalar_params={trainable_now} sttran_trainable_tensors={sttran_tensors_req}"
+            )
+        elif not args.synthetic:
+            sttran_tensors_req = sum(1 for _n, p in multi.sttran.named_parameters() if p.requires_grad)
+            print(
+                f"[train_state] epoch={epoch_global} stage={args.stage} "
+                f"sttran_trainable_tensors={sttran_tensors_req} "
+                f"(0 expected for stage=head; >0 expected for trunk/joint trunk-on phases)"
+            )
         if args.synthetic:
             entry, pred_target = make_synthetic_vidvrd_entry(
                 device=device,
@@ -813,7 +824,7 @@ def main() -> None:
             grad_stats_every = max(0, int(getattr(args, "grad_stats_every", 0)))
 
             def _grad_stats(prefix: str) -> tuple[float, float, float]:
-                # returns (l2, mean_abs, max_abs)
+                # returns (l2, mean_abs, max_abs) — only over params with requires_grad and p.grad set.
                 ss = 0.0
                 n = 0
                 mean_abs_acc = 0.0
@@ -836,6 +847,50 @@ def main() -> None:
                 l2 = float(ss ** 0.5)
                 mean_abs = float(mean_abs_acc / max(1, n))
                 return l2, mean_abs, max_abs
+
+            def _count_params_and_grads(prefix: str) -> tuple[int, int, int]:
+                """Returns (n_params, n_requires_grad, n_with_nonnull_grad)."""
+                n_all = 0
+                n_req = 0
+                n_g = 0
+                for name, p in multi.named_parameters():
+                    if not name.startswith(prefix):
+                        continue
+                    n_all += 1
+                    if bool(p.requires_grad):
+                        n_req += 1
+                        if p.grad is not None:
+                            n_g += 1
+                return n_all, n_req, n_g
+
+            def _log_grad_stats(which: str) -> None:
+                """Log grad magnitudes + tensor counts (distinguishes frozen trunk vs vanishing)."""
+                h_l2, h_mean, h_max = _grad_stats("vidvrd_head.")
+                t_l2, t_mean, t_max = _grad_stats("sttran.")
+                st_all, st_req, st_g = _count_params_and_grads("sttran.")
+                hd_all, hd_req, hd_g = _count_params_and_grads("vidvrd_head.")
+                print(
+                    f"[grad_stats][{which}] opt_step={opt_steps+1} "
+                    f"sttran(trainable_tensors={st_req}/{st_all}, with_grad={st_g}) "
+                    f"vidvrd_head(trainable_tensors={hd_req}/{hd_all}, with_grad={hd_g}) "
+                    f"head_mag(l2={h_l2:.3g} mean|g|={h_mean:.3g} max|g|={h_max:.3g}) "
+                    f"trunk_mag(l2={t_l2:.3g} mean|g|={t_mean:.3g} max|g|={t_max:.3g})"
+                )
+                if st_req == 0:
+                    print(
+                        "[grad_stats][note] sttran has 0 trainable tensors this step → trunk_mag=0 is expected "
+                        "(head-only stage, joint warmup, or full trunk freeze)."
+                    )
+                elif st_g == 0:
+                    print(
+                        "[grad_stats][warn] sttran tensors are trainable but no .grad — backward may not reach "
+                        "the transformer (graph break); this is not 'vanishing grads'."
+                    )
+                elif float(t_l2) == 0.0:
+                    print(
+                        "[grad_stats][warn] sttran grads exist but L2 norm is exactly 0 (check for degenerate batch)."
+                    )
+
             # Keep a rollback point for catastrophic non-finite events.
             last_good_state = copy.deepcopy(multi.state_dict())
             lr_drop_count = 0
@@ -934,13 +989,7 @@ def main() -> None:
                 step_in_accum += 1
                 if step_in_accum >= accum_steps:
                     if grad_stats_every and ((opt_steps + 1) % grad_stats_every == 0):
-                        h_l2, h_mean, h_max = _grad_stats("vidvrd_head.")
-                        t_l2, t_mean, t_max = _grad_stats("sttran.")
-                        print(
-                            f"[grad_stats] opt_step={opt_steps+1} "
-                            f"head(l2={h_l2:.3g} mean|g|={h_mean:.3g} max|g|={h_max:.3g}) "
-                            f"trunk(l2={t_l2:.3g} mean|g|={t_mean:.3g} max|g|={t_max:.3g})"
-                        )
+                        _log_grad_stats("pre_step")
                     try:
                         gradnorm_last = optimizer_step(
                             optimizer=optimizer,
@@ -1016,13 +1065,7 @@ def main() -> None:
             if step_in_accum > 0:
                 try:
                     if grad_stats_every and ((opt_steps + 1) % grad_stats_every == 0):
-                        h_l2, h_mean, h_max = _grad_stats("vidvrd_head.")
-                        t_l2, t_mean, t_max = _grad_stats("sttran.")
-                        print(
-                            f"[grad_stats] opt_step={opt_steps+1} "
-                            f"head(l2={h_l2:.3g} mean|g|={h_mean:.3g} max|g|={h_max:.3g}) "
-                            f"trunk(l2={t_l2:.3g} mean|g|={t_mean:.3g} max|g|={t_max:.3g})"
-                        )
+                        _log_grad_stats("flush_pre_step")
                     gradnorm_last = optimizer_step(
                         optimizer=optimizer,
                         multi=multi,
