@@ -305,6 +305,15 @@ def main() -> None:
     ap.add_argument("--accum_steps", type=int, default=1, help="Gradient accumulation steps (videos).")
     ap.add_argument("--grad_clip", type=float, default=5.0, help="Clip grad norm (0 disables).")
     ap.add_argument(
+        "--grad_stats_every",
+        type=int,
+        default=0,
+        help=(
+            "If >0, print gradient magnitude stats every N optimizer steps "
+            "(head vs trunk): L2 norm, mean|grad|, max|grad|. Helps diagnose vanishing/exploding grads."
+        ),
+    )
+    ap.add_argument(
         "--nonfinite_policy",
         type=str,
         choices=("raise", "skip_video", "skip_step", "rollback_lr"),
@@ -748,6 +757,33 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             step_in_accum = 0
             gradnorm_last = 0.0
+            opt_steps = 0
+            grad_stats_every = max(0, int(getattr(args, "grad_stats_every", 0)))
+
+            def _grad_stats(prefix: str) -> tuple[float, float, float]:
+                # returns (l2, mean_abs, max_abs)
+                ss = 0.0
+                n = 0
+                mean_abs_acc = 0.0
+                max_abs = 0.0
+                for name, p in multi.named_parameters():
+                    if not name.startswith(prefix):
+                        continue
+                    if (p.grad is None) or (not p.requires_grad):
+                        continue
+                    g = p.grad.detach()
+                    if g.numel() == 0:
+                        continue
+                    # use float32 accumulation for stability
+                    gf = g.float()
+                    ss += float((gf * gf).sum().item())
+                    abs_g = gf.abs()
+                    mean_abs_acc += float(abs_g.sum().item())
+                    max_abs = max(max_abs, float(abs_g.max().item()))
+                    n += int(gf.numel())
+                l2 = float(ss ** 0.5)
+                mean_abs = float(mean_abs_acc / max(1, n))
+                return l2, mean_abs, max_abs
             # Keep a rollback point for catastrophic non-finite events.
             last_good_state = copy.deepcopy(multi.state_dict())
             lr_drop_count = 0
@@ -844,6 +880,14 @@ def main() -> None:
                 losses.append(loss)
                 step_in_accum += 1
                 if step_in_accum >= accum_steps:
+                    if grad_stats_every and ((opt_steps + 1) % grad_stats_every == 0):
+                        h_l2, h_mean, h_max = _grad_stats("vidvrd_head.")
+                        t_l2, t_mean, t_max = _grad_stats("sttran.")
+                        print(
+                            f"[grad_stats] opt_step={opt_steps+1} "
+                            f"head(l2={h_l2:.3g} mean|g|={h_mean:.3g} max|g|={h_max:.3g}) "
+                            f"trunk(l2={t_l2:.3g} mean|g|={t_mean:.3g} max|g|={t_max:.3g})"
+                        )
                     try:
                         gradnorm_last = optimizer_step(
                             optimizer=optimizer,
@@ -853,6 +897,7 @@ def main() -> None:
                             grad_clip=float(args.grad_clip),
                         )
                         last_good_state = copy.deepcopy(multi.state_dict())
+                        opt_steps += 1
                     except Exception as e:
                         msg = (
                             f"[step_fail] stage={args.stage} epoch={epoch_global} "
@@ -917,6 +962,14 @@ def main() -> None:
             # Flush remaining grads if epoch ended mid-accum.
             if step_in_accum > 0:
                 try:
+                    if grad_stats_every and ((opt_steps + 1) % grad_stats_every == 0):
+                        h_l2, h_mean, h_max = _grad_stats("vidvrd_head.")
+                        t_l2, t_mean, t_max = _grad_stats("sttran.")
+                        print(
+                            f"[grad_stats] opt_step={opt_steps+1} "
+                            f"head(l2={h_l2:.3g} mean|g|={h_mean:.3g} max|g|={h_max:.3g}) "
+                            f"trunk(l2={t_l2:.3g} mean|g|={t_mean:.3g} max|g|={t_max:.3g})"
+                        )
                     gradnorm_last = optimizer_step(
                         optimizer=optimizer,
                         multi=multi,
@@ -925,6 +978,7 @@ def main() -> None:
                         grad_clip=float(args.grad_clip),
                     )
                     last_good_state = copy.deepcopy(multi.state_dict())
+                    opt_steps += 1
                 except Exception as e:
                     msg = (
                         f"[flush_step_fail] stage={args.stage} epoch={epoch+1} "
