@@ -135,6 +135,16 @@ class transformer(nn.Module):
         # In some pipelines im_idx can be float (e.g. stored as float tensor).
         if im_idx.dtype.is_floating_point:
             im_idx = im_idx.long()
+        # CRITICAL: im_idx is often *sparse* (e.g. real frame numbers or frame_start offsets),
+        # not a dense 0..T-1 range. If we treat max(im_idx)+1 as the frame count, we create
+        # many empty frames, which leads to fully-masked attention rows (NaNs) and also
+        # breaks alignment between local_output and boolean masks.
+        #
+        # Remap unique frame ids present in this batch to a dense 0..(U-1) range.
+        uniq_frames = torch.unique(im_idx)
+        uniq_frames, _ = torch.sort(uniq_frames)
+        im_idx = torch.searchsorted(uniq_frames, im_idx)
+
         rel_idx = torch.arange(im_idx.shape[0], device=im_idx.device)
 
         # `torch.mode` is not implemented on all backends (e.g. MPS).
@@ -142,8 +152,8 @@ class transformer(nn.Module):
         uniq, counts = torch.unique(im_idx, return_counts=True)
         mode_val = uniq[counts.argmax()]
         l = torch.sum(im_idx == mode_val)  # highest relation count in a single frame
-        # Do not assume im_idx is sorted; use max().
-        b = int(im_idx.max().item() + 1)
+        # After remapping, frames are dense by construction.
+        b = int(uniq_frames.numel())
         if debug_masks:
             # Basic diagnostics about frame grouping.
             uniq2, counts2 = torch.unique(im_idx, return_counts=True)
@@ -169,22 +179,18 @@ class transformer(nn.Module):
             rel_input[:torch.sum(im_idx == i), i, :] = features[im_idx == i]
             masks[i, torch.sum(im_idx == i):] = True
 
-        # IMPORTANT: MultiheadAttention can output NaNs if a sequence is fully masked
-        # (softmax over all -inf). If a frame has zero relations, masks[i] will be all True.
-        # Create a single dummy token so attention is well-defined; it will not affect output
-        # because we later index only real relations back via masks.view(-1) == 0.
+        # After remapping to dense frame ids, any fully-masked frame indicates a logic error
+        # (should not happen), but keep a debug print just in case.
         fully_masked = masks.all(dim=1)  # [b]
-        if bool(fully_masked.any()):
-            if debug_masks:
-                bad = fully_masked.nonzero(as_tuple=False).flatten()
-                show = min(12, int(bad.numel()))
-                ids = ", ".join(str(int(x.item())) for x in bad[:show])
-                tail = " ..." if int(bad.numel()) > show else ""
-                print(
-                    f"[sttran.transformer][debug] fully_masked_frames={int(bad.numel())}/{b} "
-                    f"(frames with 0 relations in this batch): {ids}{tail}"
-                )
-            masks[fully_masked, 0] = False
+        if debug_masks and bool(fully_masked.any()):
+            bad = fully_masked.nonzero(as_tuple=False).flatten()
+            show = min(12, int(bad.numel()))
+            ids = ", ".join(str(int(x.item())) for x in bad[:show])
+            tail = " ..." if int(bad.numel()) > show else ""
+            print(
+                f"[sttran.transformer][debug] fully_masked_frames={int(bad.numel())}/{b} "
+                f"(unexpected after im_idx remap): {ids}{tail}"
+            )
 
         # spatial encoder
         local_output, local_attention_weights = self.local_attention(rel_input, masks)
@@ -211,19 +217,17 @@ class transformer(nn.Module):
             position_embed[torch.sum(im_idx == j):torch.sum(im_idx == j)+torch.sum(im_idx == j+1), j, :] = self.position_embedding.weight[1]
 
         global_masks = (torch.sum(global_input.view(-1, features.shape[1]), dim=1) == 0).view(l * 2, b - 1).permute(1, 0)
-        # Same NaN-avoidance for the temporal decoder: ensure not fully masked.
-        fully_masked_g = global_masks.all(dim=1)  # [b-1]
-        if bool(fully_masked_g.any()):
-            if debug_masks:
+        if debug_masks:
+            fully_masked_g = global_masks.all(dim=1)  # [b-1]
+            if bool(fully_masked_g.any()):
                 bad = fully_masked_g.nonzero(as_tuple=False).flatten()
                 show = min(12, int(bad.numel()))
                 ids = ", ".join(str(int(x.item())) for x in bad[:show])
                 tail = " ..." if int(bad.numel()) > show else ""
                 print(
                     f"[sttran.transformer][debug] fully_masked_windows={int(bad.numel())}/{max(0,b-1)} "
-                    f"(temporal windows with 0 relations total): {ids}{tail}"
+                    f"(windows with 0 relations total): {ids}{tail}"
                 )
-            global_masks[fully_masked_g, 0] = False
         # temporal decoder
         global_output, global_attention_weights = self.global_attention(global_input, global_masks, position_embed)
 
