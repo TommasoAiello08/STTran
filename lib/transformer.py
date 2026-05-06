@@ -159,7 +159,7 @@ class transformer(nn.Module):
             )
             # Show up to first 12 frame counts
             show = min(12, int(uniq2.numel()))
-            pairs = ", ".join([f\"{int(uniq2[i].item())}:{int(counts2[i].item())}\" for i in range(show)])
+            pairs = ", ".join([f"{int(uniq2[i].item())}:{int(counts2[i].item())}" for i in range(show)])
             tail = " ..." if int(uniq2.numel()) > show else ""
             print(f"[sttran.transformer][debug] frame_relation_counts: {pairs}{tail}")
         rel_input = torch.zeros([l, b, features.shape[1]], device=features.device)
