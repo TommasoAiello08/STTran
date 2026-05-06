@@ -36,6 +36,8 @@ import sys
 import time
 import zipfile
 import copy
+import glob
+import re
 from pathlib import Path
 
 import torch
@@ -441,6 +443,18 @@ def main() -> None:
     best_ckpt_path = os.path.join(ckpt_dir, str(args.best_ckpt_name))
     csv_path = str(args.log_csv).strip() or os.path.join(args.out_dir, "losses.csv")
 
+    # Resume-safe epoch indexing: continue from the latest epoch_XXX.pt if present.
+    def _latest_epoch_in_ckpt_dir(d: str) -> int:
+        mx = 0
+        for p in glob.glob(os.path.join(d, "epoch_*.pt")):
+            m = re.search(r"epoch_(\d+)\.pt$", os.path.basename(p))
+            if not m:
+                continue
+            mx = max(mx, int(m.group(1)))
+        return int(mx)
+
+    epoch_base = _latest_epoch_in_ckpt_dir(ckpt_dir) if os.path.isdir(ckpt_dir) else 0
+
     # Load previous best (persists across runs in the same out_dir).
     best_loss_prev = float("inf")
     try:
@@ -650,13 +664,14 @@ def main() -> None:
 
     # 3) Training loop — replace synthetic block with your DataLoader.
     for epoch in range(args.epochs):
+        epoch_global = int(epoch_base) + int(epoch) + 1
         # For --stage joint, optionally warm up head-only then unfreeze trunk.
         # Re-apply requires_grad settings each epoch to reflect the schedule.
         trunk_trainable = _set_train_state_for_epoch(int(epoch))
         if is_joint:
             phase = "warmup_head_only" if (not trunk_trainable) else "joint_head+trunk"
             trainable_now = sum(p.numel() for p in multi.parameters() if p.requires_grad)
-            print(f"[joint] epoch={epoch + 1}/{args.epochs} phase={phase} trainable_params={trainable_now}")
+            print(f"[joint] epoch={epoch_global} (run_epoch={epoch + 1}/{args.epochs}) phase={phase} trainable_params={trainable_now}")
         if args.synthetic:
             entry, pred_target = make_synthetic_vidvrd_entry(
                 device=device,
@@ -706,7 +721,7 @@ def main() -> None:
 
             log_every = max(1, int(args.log_every))
             print(
-                f"epoch {epoch + 1}/{args.epochs}  videos_in_epoch={len(vids)}  "
+                f"epoch {epoch_global}  videos_in_epoch={len(vids)}  "
                 f"(total_json={len(_list_video_ids(json_dir))})  shuffle={bool(args.shuffle_videos)}"
             )
 
@@ -781,7 +796,7 @@ def main() -> None:
                         im_info=im_info,
                         featurizer=featurizer,
                         neg_ratio=int(neg_ratio_epoch),
-                        seed=epoch * 1000 + vi + cand_i,
+                        seed=epoch_global * 1000 + vi + cand_i,
                         frame_start=fs,
                         category_to_ag_index=category_to_ag,
                     )
@@ -840,7 +855,7 @@ def main() -> None:
                         last_good_state = copy.deepcopy(multi.state_dict())
                     except Exception as e:
                         msg = (
-                            f"[step_fail] stage={args.stage} epoch={epoch+1} "
+                            f"[step_fail] stage={args.stage} epoch={epoch_global} "
                             f"video_idx={vi+1}/{len(vids)} video_id={video_id}: {e}"
                         )
                         policy = str(getattr(args, "nonfinite_policy", "raise"))
@@ -886,7 +901,7 @@ def main() -> None:
                             except Exception:
                                 pass
                     print(
-                        f"epoch {epoch + 1}/{args.epochs}  video {vi + 1}/{len(vids)}  "
+                        f"epoch {epoch_global}  video {vi + 1}/{len(vids)}  "
                         f"{video_id}  loss={loss:.4f}  grad_norm={gradnorm_last:.3f}{extra}"
                     )
 
@@ -894,7 +909,7 @@ def main() -> None:
                 if csv_path:
                     with open(csv_path, "a", encoding="utf-8") as f:
                         f.write(
-                            f"{run_id},{args.stage},{epoch+1},{vi+1},{video_id},"
+                            f"{run_id},{args.stage},{epoch_global},{vi+1},{video_id},"
                             f"{loss:.6f},{gradnorm_last:.6f},"
                             f"{dt_json:.4f},{dt_io:.4f},{dt_feat:.4f},{dt_bw:.4f},{dt_step:.4f},{dt_total:.4f}\n"
                         )
@@ -938,7 +953,7 @@ def main() -> None:
                 raise SystemExit("No training steps were run (no usable videos/frames).")
             mean_loss = float(sum(losses) / len(losses))
             print(
-                f"epoch {epoch + 1}/{args.epochs}  mean_loss={mean_loss:.4f}  "
+                f"epoch {epoch_global}  mean_loss={mean_loss:.4f}  "
                 f"steps={len(losses)}  skipped_no_frames={skipped_no_frames}  "
                 f"skipped_empty_target={skipped_empty_target}  "
                 f"recovered_empty_target={recovered_empty_target}  "
@@ -993,7 +1008,7 @@ def main() -> None:
                                 im_info=im_info,
                                 featurizer=featurizer,
                                 neg_ratio=int(args.neg_ratio),
-                                seed=epoch * 1000 + evi,
+                                seed=epoch_global * 1000 + evi,
                                 frame_start=fs,
                                 category_to_ag_index=category_to_ag,
                             )
@@ -1007,7 +1022,7 @@ def main() -> None:
                             if csv_path:
                                 with open(csv_path, "a", encoding="utf-8") as f:
                                     f.write(
-                                        f"{run_id},eval,{epoch+1},{evi+1},{ev_video_id},"
+                                        f"{run_id},eval,{epoch_global},{evi+1},{ev_video_id},"
                                         f"{ev_loss:.6f},0.000000,"
                                         f"0.0000,0.0000,0.0000,0.0000,0.0000,0.0000\n"
                                     )
@@ -1041,7 +1056,7 @@ def main() -> None:
                 mode=args.save_mode,
                 extra_meta={
                     "base_ckpt": os.path.abspath(args.base_ckpt),
-                    "epoch": epoch + 1,
+                    "epoch": epoch_global,
                     "num_predicates": num_predicates,
                     "split": getattr(args, "split", None),
                     "dataset_root": dataset_root,
@@ -1055,7 +1070,7 @@ def main() -> None:
                     {
                         "best_mean_loss": best_loss,
                         "best_ckpt": os.path.basename(best_ckpt_path),
-                        "epoch": epoch + 1,
+                        "epoch": epoch_global,
                         "stage": args.stage,
                         "run_id": run_id,
                     },
@@ -1070,14 +1085,14 @@ def main() -> None:
             print(f"  [best] not improved: mean_loss={current_mean:.4f}  best={best_loss:.4f}  bad_epochs={bad_epochs}")
 
         if not bool(args.save_best_only):
-            out_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
+            out_path = os.path.join(ckpt_dir, f"epoch_{epoch_global:03d}.pt")
             save_vidvrd_train_checkpoint(
                 out_path,
                 multi,
                 mode=args.save_mode,
                 extra_meta={
                     "base_ckpt": os.path.abspath(args.base_ckpt),
-                    "epoch": epoch + 1,
+                    "epoch": epoch_global,
                     "num_predicates": num_predicates,
                     "split": getattr(args, "split", None),
                     "dataset_root": dataset_root,
