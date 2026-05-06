@@ -267,6 +267,18 @@ def main() -> None:
         default=3,
         help="Negatives per positive (approx) inside build_vidvrd_predcls_entry.",
     )
+    ap.add_argument(
+        "--neg_ratio_warmup_epochs",
+        type=int,
+        default=0,
+        help="If >0, use --neg_ratio_warmup_value for the first N epochs, then switch to --neg_ratio.",
+    )
+    ap.add_argument(
+        "--neg_ratio_warmup_value",
+        type=int,
+        default=1,
+        help="Warmup neg_ratio value used for the first --neg_ratio_warmup_epochs epochs.",
+    )
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument(
         "--stage",
@@ -389,6 +401,16 @@ def main() -> None:
         type=int,
         default=0,
         help="First frame index within each video (must align with JSON/windowing).",
+    )
+    ap.add_argument(
+        "--frame_start_candidates",
+        type=str,
+        default="",
+        help=(
+            "Optional comma-separated frame_start candidates to try per video, in order (e.g. '0,25,50,75,100'). "
+            "The first candidate producing a non-empty pred_target is used; otherwise the video is counted as "
+            "skipped_empty_target."
+        ),
     )
     ap.add_argument(
         "--train_sttran_trunk",
@@ -693,7 +715,21 @@ def main() -> None:
             skipped_empty_target = 0
             skipped_missing_frames_dir = 0
             skipped_frames_subdir_mismatch = 0
+            recovered_empty_target = 0
             frame_start = max(0, int(args.frame_start))
+            # Optional per-video retry schedule to avoid empty windows.
+            fsc_raw = str(getattr(args, "frame_start_candidates", "")).strip()
+            if fsc_raw:
+                try:
+                    frame_start_candidates = [max(0, int(x.strip())) for x in fsc_raw.split(",") if x.strip() != ""]
+                except Exception:
+                    frame_start_candidates = [frame_start]
+            else:
+                frame_start_candidates = [frame_start]
+
+            warmup_epochs = max(0, int(getattr(args, "neg_ratio_warmup_epochs", 0)))
+            warmup_value = int(getattr(args, "neg_ratio_warmup_value", 1))
+            neg_ratio_epoch = warmup_value if int(epoch) < warmup_epochs else int(args.neg_ratio)
             optimizer.zero_grad(set_to_none=True)
             step_in_accum = 0
             gradnorm_last = 0.0
@@ -721,41 +757,50 @@ def main() -> None:
                     [n for n in os.listdir(frames_dir) if n.lower().endswith((".jpg", ".jpeg", ".png"))]
                 )
                 meta_fc = int(vidvrd.get("frame_count", len(frame_files)))
-                fs = max(
-                    0,
-                    min(frame_start, len(frame_files) - 1, max(0, meta_fc - 1)),
-                )
-                T_use = min(len(frame_files) - fs, meta_fc - fs, int(args.max_frames))
-                if T_use <= 0:
-                    skipped_no_frames += 1
-                    if vi % log_every == 0:
-                        print(f"[skip] no frames: {video_id}")
-                    continue
+                # Try multiple frame_start candidates to find a non-empty pred_target.
+                entry = None
+                pred_target = None
+                skipped = []
+                chosen_fs = None
+                t_io = None
+                t_feat = None
+                for cand_i, fs_cand in enumerate(frame_start_candidates):
+                    fs = max(0, min(int(fs_cand), len(frame_files) - 1, max(0, meta_fc - 1)))
+                    T_use = min(len(frame_files) - fs, meta_fc - fs, int(args.max_frames))
+                    if T_use <= 0:
+                        continue
+                    im_data, im_info, _scales = _build_im(
+                        str(frames_dir), frame_files, T_use, device, start_idx=fs
+                    )
+                    t_io = time.time()
+                    entry, pred_target, skipped = build_training_batch_from_vidvrd(
+                        vidvrd_json=vidvrd,
+                        obj2id=obj2id,  # type: ignore[arg-type]
+                        pred2id=pred2id,  # type: ignore[arg-type]
+                        im_data=im_data,
+                        im_info=im_info,
+                        featurizer=featurizer,
+                        neg_ratio=int(neg_ratio_epoch),
+                        seed=epoch * 1000 + vi + cand_i,
+                        frame_start=fs,
+                        category_to_ag_index=category_to_ag,
+                    )
+                    t_feat = time.time()
+                    if pred_target.numel() != 0:
+                        chosen_fs = fs
+                        if cand_i > 0:
+                            recovered_empty_target += 1
+                        break
 
-                im_data, im_info, _scales = _build_im(
-                    str(frames_dir), frame_files, T_use, device, start_idx=fs
-                )
-                t_io = time.time()
-                entry, pred_target, skipped = build_training_batch_from_vidvrd(
-                    vidvrd_json=vidvrd,
-                    obj2id=obj2id,  # type: ignore[arg-type]
-                    pred2id=pred2id,  # type: ignore[arg-type]
-                    im_data=im_data,
-                    im_info=im_info,
-                    featurizer=featurizer,
-                    neg_ratio=int(args.neg_ratio),
-                    seed=epoch * 1000 + vi,
-                    frame_start=fs,
-                    category_to_ag_index=category_to_ag,
-                )
-                t_feat = time.time()
-                if skipped and vi % log_every == 0:
-                    print(f"[warn] {video_id}: skipped_relation_msgs={len(skipped)}")
-                if pred_target.numel() == 0:
+                if chosen_fs is None:
+                    # Couldn't build a usable window for any candidate.
+                    skipped_no_frames += 1 if len(frame_files) == 0 else 0
                     skipped_empty_target += 1
                     if vi % log_every == 0:
-                        print(f"[skip] empty pred_target (no pairs in window): {video_id}")
+                        print(f"[skip] empty pred_target for all frame_start candidates: {video_id}")
                     continue
+                if skipped and vi % log_every == 0:
+                    print(f"[warn] {video_id}: skipped_relation_msgs={len(skipped)}")
                 try:
                     loss = train_step_vidvrd(
                         multi,
@@ -896,6 +941,7 @@ def main() -> None:
                 f"epoch {epoch + 1}/{args.epochs}  mean_loss={mean_loss:.4f}  "
                 f"steps={len(losses)}  skipped_no_frames={skipped_no_frames}  "
                 f"skipped_empty_target={skipped_empty_target}  "
+                f"recovered_empty_target={recovered_empty_target}  "
                 f"skipped_missing_frames_dir={skipped_missing_frames_dir}  "
                 f"resolved_nondefault_frames_subdir={skipped_frames_subdir_mismatch}  "
                 f"epoch_time_min={(time.time()-t_epoch0)/60.0:.1f}"
