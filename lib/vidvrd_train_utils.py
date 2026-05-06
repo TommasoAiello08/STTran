@@ -129,7 +129,8 @@ def train_step_vidvrd(
     scaler: Optional[torch.cuda.amp.GradScaler] = None,
     grad_clip: float = 0.0,
     accum_scale: float = 1.0,
-) -> float:
+    return_metrics: bool = False,
+) -> float | tuple[float, float, float]:
     """
     One optimization step on the VIDVRD head (``head="vidvrd"``).
 
@@ -195,6 +196,15 @@ def train_step_vidvrd(
                     f"Invalid target ids: min={tmin} max={tmax} but num_classes={int(logits.shape[1])}. "
                     "Check vocab/pred2id consistency and background id."
                 )
+        # Accuracy metrics (top-1), computed before backward.
+        with torch.no_grad():
+            pred = logits.argmax(dim=1)
+            acc_top1 = float((pred == tgt).float().mean().detach().cpu()) if tgt.numel() else float("nan")
+            mask = (tgt != 0)
+            if bool(mask.any()):
+                acc_top1_no_bg = float((pred[mask] == tgt[mask]).float().mean().detach().cpu())
+            else:
+                acc_top1_no_bg = float("nan")
         loss = F.cross_entropy(logits, tgt) * float(accum_scale)
 
     if bool(use_amp) and torch.cuda.is_available():
@@ -205,7 +215,10 @@ def train_step_vidvrd(
         loss.backward()
 
     # Caller controls optimizer stepping to allow gradient accumulation.
-    return float(loss.detach().cpu())
+    loss_f = float(loss.detach().cpu())
+    if return_metrics:
+        return loss_f, float(acc_top1), float(acc_top1_no_bg)
+    return loss_f
 
 
 def optimizer_step(
@@ -276,7 +289,7 @@ def eval_step_vidvrd(
     pred_target: torch.Tensor,
     *,
     device: torch.device,
-) -> float:
+) -> float | tuple[float, float, float]:
     """Cross-entropy without backward (validation)."""
     multi.eval()
     entry_dev = {k: v.to(device) if torch.is_tensor(v) else v for k, v in entry.items()}
@@ -285,7 +298,15 @@ def eval_step_vidvrd(
     logits = out.vidvrd_logits
     if logits is None:
         raise RuntimeError("Model did not return vidvrd_logits")
-    return float(F.cross_entropy(logits, tgt).detach().cpu())
+    loss = float(F.cross_entropy(logits, tgt).detach().cpu())
+    pred = logits.argmax(dim=1)
+    acc_top1 = float((pred == tgt).float().mean().detach().cpu()) if tgt.numel() else float("nan")
+    mask = (tgt != 0)
+    if bool(mask.any()):
+        acc_top1_no_bg = float((pred[mask] == tgt[mask]).float().mean().detach().cpu())
+    else:
+        acc_top1_no_bg = float("nan")
+    return loss, acc_top1, acc_top1_no_bg
 
 
 def make_synthetic_vidvrd_entry(

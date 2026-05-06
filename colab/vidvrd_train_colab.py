@@ -475,15 +475,51 @@ def main() -> None:
     best_loss = best_loss_prev
     bad_epochs = 0
 
-    # Prepare CSV log (append-safe).
+    # Prepare CSV log (append-safe), with automatic header upgrade (adds accuracy columns).
     if csv_path:
+        header_v2 = (
+            "run_id,stage,epoch,video_idx,video_id,loss,acc_top1,acc_top1_no_bg,grad_norm,"
+            "dt_json,dt_io,dt_feat,dt_bw,dt_step,dt_total\n"
+        )
+        header_v1 = (
+            "run_id,stage,epoch,video_idx,video_id,loss,grad_norm,"
+            "dt_json,dt_io,dt_feat,dt_bw,dt_step,dt_total\n"
+        )
+
+        if os.path.isfile(csv_path) and os.path.getsize(csv_path) > 0:
+            try:
+                with open(csv_path, "r", encoding="utf-8") as f:
+                    first = f.readline()
+                if first.strip() == header_v1.strip():
+                    # Upgrade in-place: pad existing rows with empty acc fields.
+                    bak = csv_path + ".bak_v1"
+                    try:
+                        import shutil
+
+                        shutil.copy2(csv_path, bak)
+                    except Exception:
+                        pass
+                    with open(csv_path, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    with open(csv_path, "w", encoding="utf-8") as f:
+                        f.write(header_v2)
+                        for ln in lines[1:]:
+                            ln = ln.rstrip("\n")
+                            if not ln:
+                                continue
+                            parts = ln.split(",")
+                            # v1 rows have 13 fields; v2 expects 15 fields.
+                            if len(parts) == 13:
+                                ln = ln + ",,"
+                            f.write(ln + "\n")
+                    print(f"[log_csv] upgraded header v1→v2 (backup={bak})")
+            except Exception as e:
+                print(f"[log_csv] warning: could not upgrade header: {e}")
+
         need_header = (not os.path.isfile(csv_path)) or os.path.getsize(csv_path) == 0
         with open(csv_path, "a", encoding="utf-8") as f:
             if need_header:
-                f.write(
-                    "run_id,stage,epoch,video_idx,video_id,loss,grad_norm,"
-                    "dt_json,dt_io,dt_feat,dt_bw,dt_step,dt_total\n"
-                )
+                f.write(header_v2)
     run_id = f"{int(time.time())}"
 
     # Optional convenience: if the user provides a VIDVRD zip, unzip it once so non-synthetic
@@ -853,7 +889,7 @@ def main() -> None:
                 if skipped and vi % log_every == 0:
                     print(f"[warn] {video_id}: skipped_relation_msgs={len(skipped)}")
                 try:
-                    loss = train_step_vidvrd(
+                    loss, acc1, acc1_nb = train_step_vidvrd(
                         multi,
                         entry,
                         pred_target,
@@ -863,6 +899,7 @@ def main() -> None:
                         scaler=scaler,
                         grad_clip=float(args.grad_clip),
                         accum_scale=1.0 / float(accum_steps),
+                        return_metrics=True,
                     )
                 except Exception as e:
                     msg = f"[train_fail] stage={args.stage} epoch={epoch+1} video_idx={vi+1}/{len(vids)} video_id={video_id}: {e}"
@@ -955,7 +992,7 @@ def main() -> None:
                     with open(csv_path, "a", encoding="utf-8") as f:
                         f.write(
                             f"{run_id},{args.stage},{epoch_global},{vi+1},{video_id},"
-                            f"{loss:.6f},{gradnorm_last:.6f},"
+                            f"{loss:.6f},{acc1:.6f},{acc1_nb:.6f},{gradnorm_last:.6f},"
                             f"{dt_json:.4f},{dt_io:.4f},{dt_feat:.4f},{dt_bw:.4f},{dt_step:.4f},{dt_total:.4f}\n"
                         )
 
@@ -1069,7 +1106,7 @@ def main() -> None:
                             if pred_target.numel() == 0:
                                 ev_skipped_empty_target += 1
                                 continue
-                            ev_loss = eval_step_vidvrd(multi, entry, pred_target, device=device)
+                            ev_loss, ev_acc1, ev_acc1_nb = eval_step_vidvrd(multi, entry, pred_target, device=device)
                             eval_losses.append(ev_loss)
 
                             # CSV: append eval rows (keeps plotting simple; stage="eval").
@@ -1077,7 +1114,7 @@ def main() -> None:
                                 with open(csv_path, "a", encoding="utf-8") as f:
                                     f.write(
                                         f"{run_id},eval,{epoch_global},{evi+1},{ev_video_id},"
-                                        f"{ev_loss:.6f},0.000000,"
+                                        f"{ev_loss:.6f},{ev_acc1:.6f},{ev_acc1_nb:.6f},0.000000,"
                                         f"0.0000,0.0000,0.0000,0.0000,0.0000,0.0000\n"
                                     )
 
