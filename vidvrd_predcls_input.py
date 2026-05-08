@@ -226,7 +226,13 @@ def build_vidvrd_pairs_from_relation_spans(
     pos: List[Tuple[int, int, int, int]] = []
     skipped: List[str] = []
     for r in rel_spans:
-        pred_id = int(pred2id[r.predicate])
+        # Some dataset repacks / vocab files can miss rare predicates.
+        # Skipping is safer than crashing mid-epoch; counts are reported upstream.
+        pred_id_raw = pred2id.get(r.predicate)
+        if pred_id_raw is None:
+            skipped.append(f"skip rel pred={r.predicate}: unknown predicate (missing from vocab)")
+            continue
+        pred_id = int(pred_id_raw)
         for f in range(max(0, r.begin_fid), min(T, r.end_fid)):
             local = tid_to_local_idx[f]
             if r.subject_tid not in local or r.object_tid not in local:
