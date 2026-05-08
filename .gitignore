@@ -27,8 +27,15 @@ venv/
 
 # Generated outputs / logs
 output/
+output2_more/
+plots/
 pretrained/
 ckpts/
+
+# Local VIDVRD repacks (very large)
+vidvrd-dataset_480_s8_FIXED/
+vidvrd-dataset_480_s8_fixed/
+final_dataset_vidvrd*/
 
 # Downloaded word vectors
 data/glove.6B.*

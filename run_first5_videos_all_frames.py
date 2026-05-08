@@ -63,6 +63,10 @@ from viz_terminal_scene_graphs import (
 
 
 def pick_device() -> torch.device:
+    # MPS can hard-crash (segfault) for some ops / shapes on some PyTorch versions.
+    # Allow forcing CPU for stability in visualization/debug runs.
+    if os.environ.get("FORCE_CPU", "").strip().lower() in ("1", "true", "yes", "y"):
+        return torch.device("cpu")
     if torch.cuda.is_available():
         return torch.device("cuda:0")
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
@@ -281,9 +285,48 @@ def main():
     ).to(device=device)
     model.eval()
 
-    ckpt = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(ckpt["state_dict"], strict=False)
-    print("checkpoint loaded")
+    def _load_blob(path: str):
+        try:
+            return torch.load(path, map_location=device, weights_only=False)
+        except TypeError:
+            return torch.load(path, map_location=device)
+
+    def _extract_state_dict(blob):
+        # Accept:
+        # - {"state_dict": ...} (common training format)
+        # - raw state_dict (OrderedDict[str, Tensor])
+        if isinstance(blob, dict) and "state_dict" in blob:
+            return blob["state_dict"]
+        return blob
+
+    def _strip_prefix(sd: dict, prefix: str) -> dict:
+        if not isinstance(sd, dict):
+            return sd
+        if not any(k.startswith(prefix) for k in sd.keys()):
+            return sd
+        return {k[len(prefix) :]: v for k, v in sd.items() if k.startswith(prefix)}
+
+    # Support a robust "base + overlay" load:
+    # - base: keep AG heads correct (predcls/sgcls/sgdet) so visualizations remain meaningful
+    # - overlay: apply transformer/trunk updates (often from VIDVRD fine-tuning) using strict=False
+    #
+    # Env vars:
+    #   STTRAN_BASE_CKPT: path to base STTran .tar (default: ckpts/<mode>.tar or STTRAN_CKPT)
+    #   STTRAN_OVERLAY_CKPT: optional path to a second checkpoint to apply after base
+    overlay_path = os.environ.get("STTRAN_OVERLAY_CKPT", "").strip()
+
+    base_blob = _load_blob(ckpt_path)
+    base_sd = _extract_state_dict(base_blob)
+    _missing, _unexpected = model.load_state_dict(base_sd, strict=False)
+    print(f"checkpoint loaded (base): {ckpt_path}")
+
+    if overlay_path:
+        ov_blob = _load_blob(resolve_repo_path(overlay_path) if not os.path.isabs(overlay_path) else overlay_path)
+        ov_sd = _extract_state_dict(ov_blob)
+        # If overlay is an STTranMultiHead-style state_dict, parameters are nested under "sttran."
+        ov_sd = _strip_prefix(ov_sd, "sttran.")
+        _missing2, _unexpected2 = model.load_state_dict(ov_sd, strict=False)
+        print(f"checkpoint loaded (overlay, strict=False): {overlay_path}")
 
     if sttran_mode == "sgdet" and device.type == "mps" and os.environ.get("SGDET_RCNN_CHUNK") is None:
         # First Faster R-CNN batch is often the long “silent” stretch; slightly smaller chunks

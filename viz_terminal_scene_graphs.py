@@ -170,6 +170,16 @@ def _id_to_char(i: int) -> str:
     return "?"
 
 
+def _multiline_class_label(cls: str) -> str:
+    """Stack slash-separated synonyms (common in AG) so labels fit inside nodes."""
+    if not cls:
+        return ""
+    if "/" not in cls:
+        return cls
+    parts = [p.strip() for p in cls.split("/") if p.strip()]
+    return "\n".join(parts) if len(parts) > 1 else cls
+
+
 def _edge_style(edge: Edge):
     # (color, linestyle, label_prefix)
     if edge.group == "att":
@@ -255,18 +265,38 @@ def render_frame_png(
         else:
             pos = nx.circular_layout(G)
 
-    plt.figure(figsize=(10, 7))
+    plt.figure(figsize=(11, 8))
     plt.axis("off")
     plt.title(f"Scene graph (frame {frame.frame_idx})")
 
-    # Draw nodes (char id + class name)
-    node_labels = {}
+    # Draw nodes (char id + class name); multi-line for cup/glass/bottle-style synonyms
+    node_labels: Dict[int, str] = {}
+    node_sizes: List[float] = []
     for n in G.nodes():
         ch = G.nodes[n].get("label", "?")
-        cls = G.nodes[n].get("cls", "")
-        node_labels[n] = f"{ch}\n{cls}" if cls else str(ch)
-    nx.draw_networkx_nodes(G, pos, node_size=1200, node_color="#111827", alpha=0.92, linewidths=1.5, edgecolors="#e5e7eb")
-    nx.draw_networkx_labels(G, pos, labels=node_labels, font_color="white", font_size=10, font_weight="bold")
+        cls_raw = G.nodes[n].get("cls", "")
+        cls_disp = _multiline_class_label(cls_raw) if cls_raw else ""
+        node_labels[n] = f"{ch}\n{cls_disp}" if cls_disp else str(ch)
+        n_lines = node_labels[n].count("\n") + 1
+        node_sizes.append(float(1150 + (n_lines - 1) * 480))
+
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        node_size=node_sizes,
+        node_color="#111827",
+        alpha=0.92,
+        linewidths=1.5,
+        edgecolors="#e5e7eb",
+    )
+    nx.draw_networkx_labels(
+        G,
+        pos,
+        labels=node_labels,
+        font_color="white",
+        font_size=8.5,
+        font_weight="bold",
+    )
 
     # Draw edges per group for color/style
     for group in ("att", "spatial", "contact"):
