@@ -12,6 +12,7 @@ __pycache__/
 venv/
 .idea/
 .vscode/
+.ipynb_checkpoints/
 
 # Large local artifacts (datasets, weights, pickles)
 *.pkl
@@ -31,6 +32,9 @@ output2_more/
 plots/
 pretrained/
 ckpts/
+study_pack_*/
+**/*.log
+**/*.log.bak
 
 # Local VIDVRD repacks (very large)
 vidvrd-dataset_480_s8_FIXED/
@@ -57,3 +61,7 @@ dataset/**
 !dataset/ag/frames/
 !dataset/ag/videos/
 !dataset/ag/.gitignore
+
+# Local notebook copies
+* (copy).ipynb
+* (*).ipynb

@@ -39,6 +39,11 @@ Env vars:
                ``SGDET_VERBOSE=0`` silences those prints.
   OUT_VIZ_ROOT / OUT_LOGS_ROOT: optional absolute or cwd-relative roots for PNGs and logs
                (default: output/first5_videos and output/logs/first5_videos).
+  STTRAN_OVERLAY_CKPT: optional path to a VIDVRD fine-tune checkpoint (e.g. ckpts/true_best.pt).
+               Expected format: STTranMultiHead save with keys ``sttran.*`` (+ ``vidvrd_head.*``).
+               The script loads the base ``STTRAN_CKPT`` first, then overlays ``sttran.*`` onto
+               plain ``STTran`` with ``strict=False`` (VIDVRD head weights are ignored). Smoke-test
+               first: ``python smoke_test_ag_overlay_ckpt.py --overlay_ckpt ckpts/true_best.pt``.
 """
 
 from __future__ import annotations

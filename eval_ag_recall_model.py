@@ -163,7 +163,7 @@ def main() -> None:
                 print(f"[progress] {vi+1}/{len(vids)}  R@50={r50:.4f}  R@100={r100:.4f}", flush=True)
 
     print("\nFinal (mean over frames):")
-    for k in (10, 20, 50, 100):
+    for k in (5, 10, 20, 50, 100):
         vals = evaluator.result_dict["predcls_recall"][k]
         print(f"R@{k}: {float(np.mean(vals)):.4f}  (n={len(vals)})")
 

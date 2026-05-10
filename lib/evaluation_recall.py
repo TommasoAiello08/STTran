@@ -23,7 +23,7 @@ class BasicSceneGraphEvaluator:
                  iou_threshold=0.5, constraint=False, semithreshold=None):
         self.result_dict = {}
         self.mode = mode
-        self.result_dict[self.mode + '_recall'] = {10: [], 20: [], 50: [], 100: []}
+        self.result_dict[self.mode + '_recall'] = {5: [], 10: [], 20: [], 50: [], 100: []}
         self.constraint = constraint # semi constraint if True
         self.iou_threshold = iou_threshold
         self.AG_object_classes = AG_object_classes
@@ -34,7 +34,7 @@ class BasicSceneGraphEvaluator:
         self.semithreshold = semithreshold
 
     def reset_result(self):
-        self.result_dict[self.mode + '_recall'] = {10: [], 20: [], 50: [], 100: []}
+        self.result_dict[self.mode + '_recall'] = {5: [], 10: [], 20: [], 50: [], 100: []}
 
     def print_stats(self):
         print('======================' + self.mode + '============================')
