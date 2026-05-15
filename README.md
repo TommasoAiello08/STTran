@@ -80,7 +80,7 @@ STTran/
 ├── results/            # Report artefacts (plots, tables, qualitative)
 ├── notebooks/          # Analysis and Colab notebooks
 ├── docs/               # Protocol notes, roadmap, report drafts
-└── Nostri_Contenuti/   # Course-specific notes and checkpoints info
+└── Nostri_Contenuti/   # local course notes (gitignored; not on GitHub)
 ```
 
 Run all Python entrypoints from **`STTran/`** using `python -m package.module`.
@@ -114,7 +114,7 @@ provided:
 ```
 scripts/colab_train_apt.ipynb        # 3 cells (mount Drive, run, print report)
 scripts/colab_run_all.py             # one-file orchestrator that does everything
-Nostri_Contenuti/COLAB_QUICKSTART.md  # step-by-step "what to upload and run" doc
+`docs/` and `scripts/colab_train_apt.ipynb`  # Colab workflow (see README below)
 ```
 
 Short version — open the notebook on Colab with an A100 runtime, run the
@@ -139,7 +139,7 @@ GitHub fork. Cell 2 runs `scripts/colab_run_all.py --stage all`, which:
    per-epoch losses / eval metrics / wall-clock — this is the artefact to
    share with collaborators after a run.
 
-See `Nostri_Contenuti/COLAB_QUICKSTART.md` for the concrete prerequisites
+See `scripts/colab_train_apt.ipynb` and the Colab section below for prerequisites
 (Drive layout, `faster_rcnn_ag.pth`, resume semantics, mini-run recipe).
 
 Colab-specific features added to the training scripts:
@@ -151,7 +151,7 @@ Colab-specific features added to the training scripts:
   Colab disconnections.
 * Checkpoints save optimizer + scheduler + scaler + epoch by default.
 
-See `Nostri_Contenuti/colab_resources_diagnosis.txt` for the detailed
+See `docs/` for protocol notes. For Colab resource issues, check the Colab section below and
 resource analysis (VRAM, storage, time-to-replicate per GPU tier).
 
 ### Pretrained weights
@@ -159,10 +159,9 @@ resource analysis (VRAM, storage, time-to-replicate per GPU tier).
 **No public APT checkpoint exists.** The authors of
 "Dynamic Scene Graph Generation via Anticipatory Pre-training" (CVPR 2022)
 have not released the official code or pretrained models. See
-`Nostri_Contenuti/pretrained_weights_status.txt` for the full audit and the
-nearest public alternatives (STTran baseline checkpoints, SceneSayer
-ECCV 2024 anticipation checkpoints — neither is directly loadable into
-`APTModel`).
+`docs/REQUIRED_ARTIFACTS.txt` and upstream STTran docs for checkpoint layout. Nearest public
+alternatives (STTran baseline checkpoints, SceneSayer ECCV 2024 anticipation checkpoints) are
+not directly loadable into `APTModel`.
 
 ---
 
@@ -272,9 +271,8 @@ train_finetune.py            new
 eval_apt.py                  new
 train.py                     replaced by deprecation dispatcher
 test.py                      replaced by deprecation dispatcher
-Nostri_Contenuti/
-  roadmap_implementazione_APT.txt  validated
-  report.txt                         APT implementation notes
+docs/                              protocol notes and roadmap (in repo)
+# Nostri_Contenuti/                local Italian notes (gitignored)
 ```
 
 ---

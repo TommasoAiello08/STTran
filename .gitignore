@@ -72,6 +72,9 @@ dataset/**
 !results/
 !results/**
 
+# Local course notes and drafts (not for the public repo)
+Nostri_Contenuti/
+
 # Local notebook copies
 * (copy).ipynb
 * (*).ipynb
