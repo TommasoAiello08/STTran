@@ -1,5 +1,8 @@
 # APT on STTran — Anticipatory Pre-Training for Dynamic Scene Graph Generation
 
+> **Course submission:** see the parent [`../README.md`](../README.md) for repository layout,
+> setup, reproducibility checklist, and the `results/` folder convention.
+
 PyTorch implementation of **"Dynamic Scene Graph Generation via Anticipatory Pre-training"** (Li et al.),
 built on top of the [STTran](https://arxiv.org/abs/2107.12309) baseline repository.
 

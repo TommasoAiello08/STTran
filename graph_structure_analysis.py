@@ -1,8 +1,8 @@
 """
 Graph-structure statistics from STTran terminal logs (no model re-run).
 
-Reads the same ``*.log`` files as ``plot_log_frequencies.py`` / ``export_graphs_json.py`` and
-parses them with ``viz_terminal_scene_graphs.parse_terminal_log``.
+Reads the same ``*.log`` files as ``plot_log_frequencies.py`` and parses them with
+``viz_terminal_scene_graphs.parse_terminal_log``.
 
 Provides:
   - Per-node **undirected binary degree** aggregated by object class (``cls``).
@@ -11,9 +11,7 @@ Provides:
     normalized Laplacian** ``L = I - D^{-1/2} A D^{-1/2}`` (isolated vertices handled with the
     standard convention ``L_ii = 1``, off-diagonal 0).
 
-Optional: if ``graphs.json`` exists for a video, you can validate parity with
-``graphs_payload_to_frame_graphs`` (same adjacency) — logs remain the source of truth here
-because they are always produced by the run script.
+Logs from ``run_first5_videos_all_frames.py`` are the source of truth for analysis.
 """
 
 from __future__ import annotations
@@ -310,7 +308,7 @@ def graphs_json_to_spectral_rows(video_id: str, payload: Mapping[str, Any]) -> L
     """
     Optional parity path: build the same undirected binary graph from ``graphs.json`` frames.
 
-    Expects ``export_graphs_json.py`` schema (nodes with id/cls; edges with src/dst/group ignored for 0/1).
+    Expects a JSON payload with ``frames[]``, each with ``nodes`` (id, cls) and ``edges`` (src, dst).
     """
     rows: List[SpectralFrameRow] = []
     for fr_obj in payload.get("frames", []):

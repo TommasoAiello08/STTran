@@ -66,7 +66,8 @@ def _parse_top_n_env(key: str, *, default: Optional[int] = None) -> Optional[int
 
 
 def _style_freq_axes(ax) -> None:
-    ax.set_facecolor("#fafafa")
+    # Presentation-friendly: pure white axes background
+    ax.set_facecolor("white")
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     ax.spines["left"].set_color("#cbd5e1")
@@ -320,7 +321,7 @@ def generate_lorenz_plots(
         fig, axes = plt.subplots(2, 2, figsize=(12.4, 10.4), dpi=160)
         fig.patch.set_facecolor("white")
         for ax, (vals, title, color) in zip(axes.flat, panels):
-            ax.set_facecolor("#fcfcfd")
+            ax.set_facecolor("white")
             ax.plot([0, 1], [0, 1], color="#94a3b8", linestyle="--", linewidth=1.2, label="Perfect equality")
             if not vals:
                 ax.text(0.5, 0.5, "(no counts)", ha="center", va="center", color="#64748b")

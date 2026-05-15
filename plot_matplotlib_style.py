@@ -61,16 +61,17 @@ _EXTRA_RC = {
     "ytick.labelsize": 9.5,
     "legend.fontsize": 9.5,
     "figure.facecolor": "white",
-    "axes.facecolor": "#fafafa",
-    "axes.edgecolor": "#94a3b8",
-    "axes.linewidth": 1.05,
+    # Poster-friendly: clean white background + thin black borders
+    "axes.facecolor": "white",
+    "axes.edgecolor": "#111827",
+    "axes.linewidth": 0.85,
     "axes.spines.top": False,
     "axes.spines.right": False,
     "axes.grid": True,
-    "grid.alpha": 0.55,
+    "grid.alpha": 0.25,
     "grid.linestyle": "-",
-    "grid.linewidth": 0.75,
-    "grid.color": "#cbd5e1",
+    "grid.linewidth": 0.65,
+    "grid.color": "#d1d5db",
 }
 
 

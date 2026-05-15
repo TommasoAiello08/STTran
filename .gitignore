@@ -26,7 +26,7 @@ venv/
 **/build/
 **/*.egg-info/
 
-# Generated outputs / logs
+# Generated outputs / logs (copy finals to results/ for the report)
 output/
 output2_more/
 plots/
@@ -35,6 +35,20 @@ ckpts/
 study_pack_*/
 **/*.log
 **/*.log.bak
+
+# Results artefacts — keep README + .gitkeep only
+results/*
+!results/README.md
+!results/.gitkeep
+!results/plots/
+results/plots/*
+!results/plots/.gitkeep
+!results/tables/
+results/tables/*
+!results/tables/.gitkeep
+!results/qualitative/
+results/qualitative/*
+!results/qualitative/.gitkeep
 
 # Local VIDVRD repacks (very large)
 vidvrd-dataset_480_s8_FIXED/
@@ -62,6 +76,16 @@ dataset/**
 !dataset/ag/videos/
 !dataset/ag/.gitignore
 
+# Generated figures (scripts write under output/ or results/)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+*.svg
+
 # Local notebook copies
 * (copy).ipynb
 * (*).ipynb
+Definitive_test_VIDVRD*.ipynb
+Copy_of_*.ipynb
