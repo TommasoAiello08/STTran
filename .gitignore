@@ -26,12 +26,12 @@ venv/
 **/build/
 **/*.egg-info/
 
-# Generated outputs / logs (copy finals to results/ for the report)
+# Generated outputs / logs (copy finals to ../results/ for the report)
 output/
 output2_more/
+output/**/study_pack_*/
 pretrained/
 ckpts/
-study_pack_*/
 **/*.log
 **/*.log.bak
 
