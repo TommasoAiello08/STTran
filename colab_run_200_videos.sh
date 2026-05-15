@@ -29,7 +29,7 @@ VIZ_LAYOUT="${VIZ_LAYOUT:-circular}"
 VIZ_REUSE_LAYOUT="${VIZ_REUSE_LAYOUT:-1}"
 MAX_RELS="${MAX_RELS:-2000}"
 
-python -u run_first5_videos_all_frames.py
+python -u -m scripts.run_first5_videos_all_frames
 
 echo ""
 echo "Done. Output root: $REPO_ROOT/STTran/output/first5_videos"

@@ -29,26 +29,11 @@ venv/
 # Generated outputs / logs (copy finals to results/ for the report)
 output/
 output2_more/
-plots/
 pretrained/
 ckpts/
 study_pack_*/
 **/*.log
 **/*.log.bak
-
-# Results artefacts — keep README + .gitkeep only
-results/*
-!results/README.md
-!results/.gitkeep
-!results/plots/
-results/plots/*
-!results/plots/.gitkeep
-!results/tables/
-results/tables/*
-!results/tables/.gitkeep
-!results/qualitative/
-results/qualitative/*
-!results/qualitative/.gitkeep
 
 # Local VIDVRD repacks (very large)
 vidvrd-dataset_480_s8_FIXED/
@@ -76,13 +61,14 @@ dataset/**
 !dataset/ag/videos/
 !dataset/ag/.gitignore
 
-# Generated figures (scripts write under output/ or results/)
+# Generated figures outside results/ (scratch under output/)
 *.png
 *.jpg
 *.jpeg
 *.gif
 *.pdf
 *.svg
+!results/**
 
 # Local notebook copies
 * (copy).ipynb

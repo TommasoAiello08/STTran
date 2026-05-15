@@ -56,8 +56,8 @@ python -m scripts.smoke_test_apt_full     # full APTModel end-to-end
 
 This repo also contains small helpers to sanity-check the STTran baseline on a few frames and visualize predicted scene graphs:
 
-- `run_one_sample.py`: run the pretrained STTran `predcls` checkpoint on a small number of frames and print nodes/edges.
-- `viz_terminal_scene_graphs.py`: parse those logs and render a colorful per-frame graph PNG (and a timeline GIF).
+- `python -m scripts.run_one_sample`: run the pretrained STTran `predcls` checkpoint on a small number of frames and print nodes/edges.
+- `plots/viz_terminal_scene_graphs.py`: parse terminal logs and render per-frame graph PNGs (and a timeline GIF).
 
 - Python 3.8 recommended (works with 3.6+; the smoke tests also run on 3.14).
 - PyTorch >= 1.8 with **CUDA** support.

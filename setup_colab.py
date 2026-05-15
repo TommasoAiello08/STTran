@@ -387,7 +387,7 @@ def main() -> None:
 
     print("==============================================================")
     print("Done. Set AG_DATA_PATH to Action Genome root, then:")
-    print("  python run_first5_videos_all_frames.py")
+    print("  python -m scripts.run_first5_videos_all_frames")
     print("  bash colab_run_200_videos.sh")
     print("==============================================================")
 

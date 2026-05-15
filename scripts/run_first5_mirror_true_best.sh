@@ -86,7 +86,7 @@ run_pass() {
   export SPLIT="$split"
   export VIDEO_IDS="$ids"
   echo "===== SPLIT=$split  (${ids//,/ }) ====="
-  "$PY" run_first5_videos_all_frames.py
+  "$PY" -m scripts.run_first5_videos_all_frames
 }
 
 run_pass test "$TEST_IDS"

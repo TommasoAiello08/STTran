@@ -49,7 +49,7 @@ export OUT_LOGS_ROOT="$OUT_ROOT/true_best/logs"
 mkdir -p "$OUT_VIZ_ROOT" "$OUT_LOGS_ROOT"
 echo ""
 echo "========== PASS A: base + $STTRAN_OVERLAY_CKPT =========="
-"$PY" "$ROOT/run_first5_videos_all_frames.py"
+"$PY" -m scripts.run_first5_videos_all_frames
 
 # --- Pass B: pretrained only ---
 unset STTRAN_OVERLAY_CKPT
@@ -58,7 +58,7 @@ export OUT_LOGS_ROOT="$OUT_ROOT/pretrained/logs"
 mkdir -p "$OUT_VIZ_ROOT" "$OUT_LOGS_ROOT"
 echo ""
 echo "========== PASS B: pretrained only ($STTRAN_CKPT) =========="
-"$PY" "$ROOT/run_first5_videos_all_frames.py"
+"$PY" -m scripts.run_first5_videos_all_frames
 
 echo ""
 echo "Done. Same video list both passes (VIDEO_LIMIT=$N, SPLIT=$SPLIT)."
