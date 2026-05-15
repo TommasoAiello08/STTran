@@ -6,6 +6,24 @@
 PyTorch implementation of **"Dynamic Scene Graph Generation via Anticipatory Pre-training"** (Li et al.),
 built on top of the [STTran](https://arxiv.org/abs/2107.12309) baseline repository.
 
+## Files required to run this repo
+
+| Included in git | Not in git (you must add) |
+|-----------------|---------------------------|
+| `requirements.txt`, `train/`, `eval/`, `lib/`, `dataloader/`, `plots/`, `scripts/`, `configs/`, `fasterRCNN/` (sources) | **Action Genome** at `dataset/ag/` or `AG_DATA_PATH` |
+| `data/ag_bootstrap/*.txt` (class names only) | **`fasterRCNN/models/faster_rcnn_ag.pth`** (~530 MB) |
+| `results/` (report figures, optional) | **`ckpts/sttran_predcls.tar`** (+ optional `sgcls` / `sgdet` / `true_best.pt`) |
+| `docs/REQUIRED_ARTIFACTS.txt` (full inventory) | **GloVe** `data/glove.6B.200d.txt` (auto-download) |
+| | **`dataloader/object_bbox_and_relationship_filtersmall.pkl`** if `mode != predcls` |
+| | **Compiled** `fasterRCNN` + Cython extensions (see below) |
+| | **APT checkpoints** under `data/apt_pretrain/`, `data/apt_finetune/` after training |
+
+Download AG weights: `python -m scripts.download_sttran_ag_weights`.  
+CPU smoke tests (no data): `python -m scripts.smoke_test_apt` and `python -m scripts.smoke_test_apt_full`.  
+VIDVRD proxy fixture (optional): `python -m scripts.generate_proxy_vidvrd_fixture` → `fixtures/` (gitignored).
+
+---
+
 The repo supports two pipelines:
 
 | Pipeline | Entry point | Notes |
