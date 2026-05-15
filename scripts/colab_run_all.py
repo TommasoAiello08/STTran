@@ -235,10 +235,9 @@ EPOCH_SAVE_RE = re.compile(r"saved checkpoint (?P<path>\S+)")
 
 def run_training(stage: str, config_path: str, overrides: List[str],
                  log_dir: str) -> Dict[str, Any]:
-    """Runs train_pretrain.py or train_finetune.py and returns parsed stats."""
+    """Runs train.train_pretrain or train.train_finetune and returns parsed stats."""
     assert stage in ("pretrain", "finetune")
-    script = f"train_{stage}.py"
-    cmd = [sys.executable, script, "--config", config_path]
+    cmd = [sys.executable, "-m", f"train.train_{stage}", "--config", config_path]
     if overrides:
         cmd += ["--set"] + overrides
     log_path = os.path.join(log_dir, f"train_{stage}.log")
@@ -264,7 +263,7 @@ def run_training(stage: str, config_path: str, overrides: List[str],
             if m2:
                 stats["checkpoints"].append(m2.group("path"))
     if rc != 0:
-        raise SystemExit(f"train_{stage}.py failed with code {rc}")
+        raise SystemExit(f"train.train_{stage} failed with code {rc}")
     return stats
 
 
@@ -279,7 +278,7 @@ EVAL_METRIC_RE = re.compile(
 
 def run_eval(config_path: str, overrides: List[str], log_dir: str) -> Dict[str, Any]:
     section("[6/6] Evaluation")
-    cmd = [sys.executable, "eval_apt.py", "--config", config_path]
+    cmd = [sys.executable, "-m", "eval.eval_apt", "--config", config_path]
     if overrides:
         cmd += ["--set"] + overrides
     log_path = os.path.join(log_dir, "eval.log")

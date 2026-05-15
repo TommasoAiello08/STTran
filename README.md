@@ -10,8 +10,8 @@ The repo supports two pipelines:
 
 | Pipeline | Entry point | Notes |
 |----------|-------------|-------|
-| **APT (default)** | `train_pretrain.py` + `train_finetune.py` + `eval_apt.py` | Two-stage: anticipatory pre-training followed by fine-tuning with a global temporal encoder |
-| STTran baseline | `train.py` / `test.py` at tag `baseline` | Reference implementation kept for comparison |
+| **APT (default)** | `python -m train.train_pretrain` + `train.train_finetune` + `eval.eval_apt` | Two-stage: anticipatory pre-training followed by fine-tuning with a global temporal encoder |
+| STTran baseline | `python -m eval.test` at tag `baseline` | Reference implementation kept for comparison |
 
 ---
 
@@ -57,7 +57,33 @@ python -m scripts.smoke_test_apt_full     # full APTModel end-to-end
 This repo also contains small helpers to sanity-check the STTran baseline on a few frames and visualize predicted scene graphs:
 
 - `python -m scripts.run_one_sample`: run the pretrained STTran `predcls` checkpoint on a small number of frames and print nodes/edges.
-- `plots/viz_terminal_scene_graphs.py`: parse terminal logs and render per-frame graph PNGs (and a timeline GIF).
+- `python -m plots.viz_terminal_scene_graphs`: parse terminal logs and render per-frame graph PNGs (and a timeline GIF).
+
+---
+
+## Repository layout
+
+```
+STTran/
+├── train/              # APT training (python -m train.train_pretrain, …)
+├── eval/               # APT + baseline evaluation
+├── scripts/            # Runners, Colab setup, smoke tests, shell drivers
+├── plots/              # Log parsing, matplotlib figures, scene-graph viz
+├── lib/
+│   ├── apt/            # APT model, config, temporal encoders
+│   ├── vidvrd/         # VIDVRD JSON pipeline, featurizers, multi-head STTran
+│   ├── sttran.py       # STTran baseline transformer
+│   └── object_detector.py, …
+├── dataloader/         # Action Genome loaders
+├── configs/            # YAML hyperparameters
+├── fasterRCNN/         # Detector backbone
+├── results/            # Report artefacts (plots, tables, qualitative)
+├── notebooks/          # Analysis and Colab notebooks
+├── docs/               # Protocol notes, roadmap, report drafts
+└── Nostri_Contenuti/   # Course-specific notes and checkpoints info
+```
+
+Run all Python entrypoints from **`STTran/`** using `python -m package.module`.
 
 - Python 3.8 recommended (works with 3.6+; the smoke tests also run on 3.14).
 - PyTorch >= 1.8 with **CUDA** support.
@@ -145,14 +171,14 @@ ECCV 2024 anticipation checkpoints — neither is directly loadable into
 Stage 1 — anticipatory pre-training (SGD, lr 1e-3, decay 0.9 / epoch, batch 16):
 
 ```bash
-python train_pretrain.py --config configs/apt_pretrain.yaml \
+python -m train.train_pretrain --config configs/apt_pretrain.yaml \
     --set mode=predcls data_path=$AG_ROOT
 ```
 
 Stage 2 — fine-tuning (SGD, lr 1e-5, decay 0.9 / epoch, batch 16):
 
 ```bash
-python train_finetune.py --config configs/apt_finetune.yaml \
+python -m train.train_finetune --config configs/apt_finetune.yaml \
     --set mode=predcls data_path=$AG_ROOT \
           pretrain_ckpt=data/apt_pretrain/apt_pretrain_latest.tar
 ```
@@ -160,7 +186,7 @@ python train_finetune.py --config configs/apt_finetune.yaml \
 Evaluation (PredCls / SGCls / SGGen chosen via `mode`, with/no/semi constraint):
 
 ```bash
-python eval_apt.py --config configs/apt_finetune.yaml \
+python -m eval.eval_apt --config configs/apt_finetune.yaml \
     --set mode=predcls data_path=$AG_ROOT \
           pretrain_ckpt=data/apt_finetune/apt_finetune_latest.tar
 ```

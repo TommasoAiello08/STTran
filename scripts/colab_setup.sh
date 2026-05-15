@@ -133,7 +133,7 @@ for mod in ("lib.draw_rectangles.draw_rectangles",
         ok = False
         print(f"  FAIL  {mod}: {type(e).__name__}: {e}")
 
-from lib.apt_model import APTModel
+from lib.apt.apt_model import APTModel
 print("  OK  lib.apt_model.APTModel")
 
 if not ok:
@@ -144,6 +144,6 @@ echo "=============================================================="
 echo "Setup complete. Next steps:"
 echo "  * Ensure Action Genome is at \$AG_ROOT (default /content/drive/MyDrive/action_genome)"
 echo "  * python -m scripts.smoke_test_apt_full   # CPU-agnostic model check"
-echo "  * python train_pretrain.py --config configs/apt_pretrain_colab.yaml \\"
+echo "  * python -m train.train_pretrain --config configs/apt_pretrain_colab.yaml \\"
 echo "        --set data_path=\$AG_ROOT"
 echo "=============================================================="

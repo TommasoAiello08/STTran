@@ -7,7 +7,7 @@ Write one synthetic VIDVRD video (JSON + RGB frames) under::
       train_frames_480/PROXY001/000000.png ...
       vocab_proxy.json   # object_categories + predicate_names for that JSON
 
-Schema matches ``vidvrd_predcls_input.parse_vidvrd_json_dict``.
+Schema matches ``lib.vidvrd.vidvrd_predcls_input.parse_vidvrd_json_dict``.
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def main() -> int:
     print(f"Wrote {vocab_path}")
     print(f"\nValidate (mock featurizer, no detector weights):")
     print(
-        f"  cd {repo} && python lib/vidvrd_pipeline_validate.py "
+        f"  cd {repo} && python -m lib.vidvrd.vidvrd_pipeline_validate "
         f"--dataset_root {root} --video_id {video_id} "
         f"--frames_subdir train_frames_480 --json_subdir train_480 "
         f"--vocab_json {vocab_path} --num_predicates 0 --mock_featurizer"

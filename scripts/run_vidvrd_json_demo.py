@@ -26,13 +26,13 @@ import json
 
 import torch
 
-from lib.ag_bootstrap import load_ag_label_bundle
+from lib.vidvrd.ag_bootstrap import load_ag_label_bundle
 from lib.object_detector import detector
 from lib.sttran import STTran
-from sttran_multitask_heads import STTranMultiHead
-from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
-from lib.vidvrd_ag_label_bridge import build_category_to_ag_index
-from vidvrd_predcls_input import build_vidvrd_predcls_entry, build_vidvrd_vocab_maps
+from lib.vidvrd.sttran_multitask_heads import STTranMultiHead
+from lib.vidvrd.vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+from lib.vidvrd.vidvrd_ag_label_bridge import build_category_to_ag_index
+from lib.vidvrd.vidvrd_predcls_input import build_vidvrd_predcls_entry, build_vidvrd_vocab_maps
 
 
 def _dummy_im_data(T: int, H: int, W: int, device: torch.device) -> torch.Tensor:

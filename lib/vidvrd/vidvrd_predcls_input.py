@@ -13,7 +13,7 @@ The core idea:
        - pair_idx:    LongTensor[R,2]
        - im_idx:      FloatTensor[R]
        - pred_target: LongTensor[R]  (0=no_relation if you include background)
-  4) Use a featurizer (see `vidvrd_predcls_featurizer.py`) to compute:
+  4) Use a featurizer (see `lib.vidvrd.vidvrd_predcls_featurizer.py`) to compute:
        - features:      FloatTensor[N,2048]
        - union_feat:    FloatTensor[R,1024,7,7]
        - spatial_masks: FloatTensor[R,2,27,27]

@@ -8,10 +8,10 @@ target key-frames. Frames in the history can be unlabeled — they go through
 the frozen Faster R-CNN detector.
 
 Usage:
-    python train_pretrain.py --config configs/apt_pretrain.yaml
+    python -m train.train_pretrain --config configs/apt_pretrain.yaml
 
 Override examples:
-    python train_pretrain.py --config configs/apt_pretrain.yaml \
+    python -m train.train_pretrain --config configs/apt_pretrain.yaml \
         --set mode=sgcls batch_size=8 lr=0.0005
 """
 
@@ -29,8 +29,8 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
 
 from dataloader.ag_anticipatory import AGAnticipatory, apt_collate_fn
-from lib.apt_config import APTConfig
-from lib.apt_model import APTModel
+from lib.apt.apt_config import APTConfig
+from lib.apt.apt_model import APTModel
 from lib.object_detector import detector
 
 

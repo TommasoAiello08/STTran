@@ -6,7 +6,7 @@ Connection to the VIDVRD → STTran pipeline
 ``train_step_vidvrd`` expects the same ``entry`` / ``pred_target`` tensors as the demo
 ``run_vidvrd_json_demo.py``. For real data, build batches with
 ``build_training_batch_from_vidvrd(...)``, which **calls**
-``vidvrd_predcls_input.build_vidvrd_predcls_entry`` (featurizer + JSON → ``entry``).
+``lib.vidvrd.vidvrd_predcls_input.build_vidvrd_predcls_entry`` (featurizer + JSON → ``entry``).
 
 ``make_synthetic_vidvrd_entry`` does **not** use that pipeline; it only checks that the
 optimizer and checkpoint code run. Switch to ``build_training_batch_from_vidvrd`` once
@@ -54,7 +54,7 @@ def build_training_batch_from_vidvrd(
     (backed by ``detector(...).fasterRCNN``). Returns ``(entry, pred_target, skipped)`` ready
     for ``train_step_vidvrd(multi, entry, pred_target, ...)``.
     """
-    from vidvrd_predcls_input import build_vidvrd_predcls_entry
+    from lib.vidvrd.vidvrd_predcls_input import build_vidvrd_predcls_entry
 
     return build_vidvrd_predcls_entry(
         vidvrd_json=vidvrd_json,

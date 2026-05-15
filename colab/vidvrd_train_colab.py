@@ -47,11 +47,11 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.ag_bootstrap import load_ag_label_bundle
+from lib.vidvrd.ag_bootstrap import load_ag_label_bundle
 from lib.sttran import STTran
-from lib.vidvrd_mock_featurizer import VidvrdMockFeaturizer
-from lib.vidvrd_checkpoint import backup_file, save_vidvrd_train_checkpoint
-from lib.vidvrd_train_utils import (
+from lib.vidvrd.vidvrd_mock_featurizer import VidvrdMockFeaturizer
+from lib.vidvrd.vidvrd_checkpoint import backup_file, save_vidvrd_train_checkpoint
+from lib.vidvrd.vidvrd_train_utils import (
     default_backup_dir,
     default_base_ckpt_path,
     build_training_batch_from_vidvrd,
@@ -62,7 +62,7 @@ from lib.vidvrd_train_utils import (
     train_step_vidvrd,
     trainable_parameter_groups,
 )
-from sttran_multitask_heads import STTranMultiHead
+from lib.vidvrd.sttran_multitask_heads import STTranMultiHead
 
 
 def _pick_device() -> torch.device:
@@ -120,7 +120,7 @@ def _build_model(
         is_vidvrd_ckpt = True
 
     if is_vidvrd_ckpt:
-        from lib.vidvrd_checkpoint import apply_vidvrd_checkpoint_to_model
+        from lib.vidvrd.vidvrd_checkpoint import apply_vidvrd_checkpoint_to_model
 
         apply_vidvrd_checkpoint_to_model(multi, base_ckpt, map_location=device, strict_full=False)
     else:
@@ -132,7 +132,7 @@ def _build_model(
 
 def _load_vocab(vocab_json_path: str) -> tuple[dict[str, int], dict[str, int], int]:
     v = json.loads(Path(vocab_json_path).read_text(encoding="utf-8"))
-    from vidvrd_predcls_input import build_vidvrd_vocab_maps
+    from lib.vidvrd.vidvrd_predcls_input import build_vidvrd_vocab_maps
 
     obj2id, pred2id = build_vidvrd_vocab_maps(
         object_categories=list(v["object_categories"]),
@@ -576,7 +576,7 @@ def main() -> None:
         if not args.vocab_json:
             raise SystemExit("Non-synthetic training requires --vocab_json (stable VIDVRD vocab).")
         obj2id, pred2id, num_predicates = _load_vocab(args.vocab_json)
-        from lib.vidvrd_ag_label_bridge import build_category_to_ag_index
+        from lib.vidvrd.vidvrd_ag_label_bridge import build_category_to_ag_index
 
         ag_object_classes = load_ag_label_bundle()[0]
         category_to_ag = build_category_to_ag_index(sorted(obj2id.keys()), ag_object_classes)
@@ -694,7 +694,7 @@ def main() -> None:
     frames_subdir = ""
     featurizer = None
     if not args.synthetic:
-        from lib.vidvrd_pipeline_validate import _build_im_data_im_info as _build_im
+        from lib.vidvrd.vidvrd_pipeline_validate import _build_im_data_im_info as _build_im
 
         split = str(args.split)
         frames_subdir = f"{split}_frames_480"
@@ -706,7 +706,7 @@ def main() -> None:
             featurizer.eval()
         else:
             from lib.object_detector import detector
-            from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+            from lib.vidvrd.vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
 
             object_classes = load_ag_label_bundle()[0]
             det = detector(

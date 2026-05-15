@@ -8,8 +8,8 @@ available at the ``baseline`` git tag / branch.
 
 Run either stage explicitly:
 
-    python train_pretrain.py --config configs/apt_pretrain.yaml
-    python train_finetune.py --config configs/apt_finetune.yaml
+    python -m train.train_pretrain --config configs/apt_pretrain.yaml
+    python -m train.train_finetune --config configs/apt_finetune.yaml
 
 Or run both sequentially (via the ablation driver with DEFAULT_MODE):
 
@@ -28,13 +28,13 @@ HELP = textwrap.dedent(
     APT two-stage pipeline. Please run:
 
       Stage 1 (anticipatory pre-training):
-        python train_pretrain.py --config configs/apt_pretrain.yaml
+        python -m train.train_pretrain --config configs/apt_pretrain.yaml
 
       Stage 2 (fine-tuning, requires the stage-1 checkpoint):
-        python train_finetune.py --config configs/apt_finetune.yaml
+        python -m train.train_finetune --config configs/apt_finetune.yaml
 
     Evaluation:
-        python eval_apt.py --config configs/apt_finetune.yaml
+        python -m eval.eval_apt --config configs/apt_finetune.yaml
 
     To recover the original STTran single-stage training, check out the
     ``baseline`` git tag.

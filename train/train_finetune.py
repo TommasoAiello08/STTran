@@ -9,7 +9,7 @@ encoder) combines the temporal context with the current frame's features.
 Loss is the same multi-label margin loss on the target frame.
 
 Usage:
-    python train_finetune.py --config configs/apt_finetune.yaml \
+    python -m train.train_finetune --config configs/apt_finetune.yaml \
         --set pretrain_ckpt=data/apt_pretrain/apt_pretrain_latest.tar
 """
 
@@ -26,10 +26,10 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
 
 from dataloader.ag_anticipatory import AGAnticipatory, apt_collate_fn
-from lib.apt_config import APTConfig
-from lib.apt_model import APTModel
+from lib.apt.apt_config import APTConfig
+from lib.apt.apt_model import APTModel
 from lib.object_detector import detector
-from train_pretrain import compute_multi_label_margin_loss
+from train.train_pretrain import compute_multi_label_margin_loss
 
 
 def main() -> None:

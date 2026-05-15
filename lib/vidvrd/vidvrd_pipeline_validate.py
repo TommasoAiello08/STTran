@@ -6,7 +6,7 @@ Use on Colab **before** the training loop to verify:
   - trajectories / relation_instances parse and align with ``build_vidvrd_predcls_entry``
   - Faster R-CNN featurizer + ``STTranMultiHead(..., head="vidvrd")`` run without shape errors
 
-This module calls **the same** ``vidvrd_predcls_input.build_vidvrd_predcls_entry`` as
+This module calls **the same** ``lib.vidvrd.vidvrd_predcls_input.build_vidvrd_predcls_entry`` as
 ``lib.vidvrd_train_utils.build_training_batch_from_vidvrd`` / ``run_vidvrd_json_demo.py``.
 """
 
@@ -28,13 +28,13 @@ import numpy as np
 import torch
 
 from fasterRCNN.lib.model.utils.blob import im_list_to_blob, prep_im_for_blob
-from lib.ag_bootstrap import load_ag_label_bundle
+from lib.vidvrd.ag_bootstrap import load_ag_label_bundle
 from lib.repo_paths import resolve_repo_path
 from lib.sttran import STTran
-from sttran_multitask_heads import STTranMultiHead
-from lib.vidvrd_ag_label_bridge import build_category_to_ag_index
-from lib.vidvrd_mock_featurizer import VidvrdMockFeaturizer
-from vidvrd_predcls_input import (
+from lib.vidvrd.sttran_multitask_heads import STTranMultiHead
+from lib.vidvrd.vidvrd_ag_label_bridge import build_category_to_ag_index
+from lib.vidvrd.vidvrd_mock_featurizer import VidvrdMockFeaturizer
+from lib.vidvrd.vidvrd_predcls_input import (
     build_vidvrd_predcls_entry,
     build_vidvrd_vocab_maps,
     parse_vidvrd_json_dict,
@@ -375,7 +375,7 @@ def validate_vidvrd_sample_pipeline(
     else:
         try:
             from lib.object_detector import detector
-            from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+            from lib.vidvrd.vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
 
             det = detector(
                 train=False,

@@ -8,7 +8,7 @@ Evaluates the three tasks (PredCls / SGCls / SGGen — chosen via the config
 Only the ``Classifiers_fin`` head is used at inference (per paper Sec. 3.5).
 
 Usage:
-    python eval_apt.py --config configs/apt_finetune.yaml \
+    python -m eval.eval_apt --config configs/apt_finetune.yaml \
         --set pretrain_ckpt=data/apt_finetune/apt_finetune_latest.tar
 """
 
@@ -22,8 +22,8 @@ import numpy as np
 import torch
 
 from dataloader.ag_anticipatory import AGAnticipatory, apt_collate_fn
-from lib.apt_config import APTConfig
-from lib.apt_model import APTModel
+from lib.apt.apt_config import APTConfig
+from lib.apt.apt_model import APTModel
 from lib.evaluation_recall import BasicSceneGraphEvaluator
 from lib.object_detector import detector
 

@@ -23,16 +23,16 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 
-from lib.ag_bootstrap import load_ag_label_bundle
+from lib.vidvrd.ag_bootstrap import load_ag_label_bundle
 from lib.repo_paths import resolve_repo_path
-from lib.vidvrd_ag_label_bridge import build_category_to_ag_index
-from lib.vidvrd_train_utils import (
+from lib.vidvrd.vidvrd_ag_label_bridge import build_category_to_ag_index
+from lib.vidvrd.vidvrd_train_utils import (
     build_training_batch_from_vidvrd,
     freeze_for_vidvrd_training,
     optimizer_step,
     train_step_vidvrd,
 )
-from sttran_multitask_heads import STTranMultiHead
+from lib.vidvrd.sttran_multitask_heads import STTranMultiHead
 from lib.sttran import STTran
 
 
@@ -48,7 +48,7 @@ def pick_device() -> torch.device:
 
 def load_vocab(vocab_json_path: str) -> Tuple[Dict[str, int], Dict[str, int], int]:
     v = json.loads(Path(vocab_json_path).read_text(encoding="utf-8"))
-    from vidvrd_predcls_input import build_vidvrd_vocab_maps
+    from lib.vidvrd.vidvrd_predcls_input import build_vidvrd_vocab_maps
 
     obj2id, pred2id = build_vidvrd_vocab_maps(
         object_categories=list(v["object_categories"]),
@@ -163,7 +163,7 @@ def main() -> None:
     category_to_ag = build_category_to_ag_index(sorted(obj2id.keys()), ag_object_classes)
 
     # Build im_data/im_info exactly like training does.
-    from lib.vidvrd_pipeline_validate import _build_im_data_im_info, _list_frame_files
+    from lib.vidvrd.vidvrd_pipeline_validate import _build_im_data_im_info, _list_frame_files
 
     frame_files = _list_frame_files(str(frames_dir))
     if not frame_files:
@@ -180,14 +180,14 @@ def main() -> None:
     )
 
     if args.mock_featurizer:
-        from lib.vidvrd_mock_featurizer import VidvrdMockFeaturizer
+        from lib.vidvrd.vidvrd_mock_featurizer import VidvrdMockFeaturizer
 
         featurizer = VidvrdMockFeaturizer().to(device)
         featurizer.eval()
     else:
         # Real Faster R-CNN featurizer path (slower but checks full pipeline)
         from lib.object_detector import detector
-        from vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
+        from lib.vidvrd.vidvrd_predcls_featurizer import VidvrdPredclsFeaturizer
 
         det = detector(
             train=False,

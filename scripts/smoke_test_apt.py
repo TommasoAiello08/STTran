@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import torch
 
-from lib.apt_temporal_encoder import (
+from lib.apt.apt_temporal_encoder import (
     GlobalTemporalEncoder,
     LongTermEncoder,
     ProgressiveTemporalEncoder,

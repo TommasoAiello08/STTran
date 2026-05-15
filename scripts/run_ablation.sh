@@ -20,7 +20,7 @@ MODE="${MODE:-predcls}"
 run_pretrain() {
     local save_path=$1
     shift
-    python train_pretrain.py --config "${PRE_CONF}" --set \
+    python -m train.train_pretrain --config "${PRE_CONF}" --set \
         mode="${MODE}" save_path="${save_path}" "$@"
 }
 
@@ -28,7 +28,7 @@ run_finetune() {
     local pretrain_ckpt=$1
     local save_path=$2
     shift 2
-    python train_finetune.py --config "${FIN_CONF}" --set \
+    python -m train.train_finetune --config "${FIN_CONF}" --set \
         mode="${MODE}" pretrain_ckpt="${pretrain_ckpt}" \
         save_path="${save_path}" "$@"
 }
@@ -36,7 +36,7 @@ run_finetune() {
 run_eval() {
     local ckpt=$1
     shift
-    python eval_apt.py --config "${FIN_CONF}" --set \
+    python -m eval.eval_apt --config "${FIN_CONF}" --set \
         mode="${MODE}" pretrain_ckpt="${ckpt}" "$@"
 }
 

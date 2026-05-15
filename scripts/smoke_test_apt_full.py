@@ -29,7 +29,7 @@ from typing import Dict, List
 
 import torch
 
-from lib.apt_model import APTModel
+from lib.apt.apt_model import APTModel
 
 
 # Action Genome taxonomy (for dimensions). The actual class names do not

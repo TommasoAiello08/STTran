@@ -16,7 +16,7 @@ HELP = textwrap.dedent(
     """
     [test.py] Evaluation for the APT pipeline is done via:
 
-        python eval_apt.py --config configs/apt_finetune.yaml \\
+        python -m eval.eval_apt --config configs/apt_finetune.yaml \\
             --set pretrain_ckpt=data/apt_finetune/apt_finetune_latest.tar
 
     This runs PredCls / SGCls / SGGen (selected via the `mode` setting) with

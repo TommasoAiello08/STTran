@@ -11,7 +11,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 
 echo "=== pipeline validate (mock featurizer + forward) ==="
-python lib/vidvrd_pipeline_validate.py \
+python -m lib.vidvrd.vidvrd_pipeline_validate \
   --dataset_root "$DATA" \
   --video_id PROXY001 \
   --frames_subdir train_frames_480 \

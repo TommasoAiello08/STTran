@@ -4,8 +4,8 @@ Colab one-shot setup: pip deps, optional native extension build, GloVe, STTran +
 
 Run from the STTran repo root:
 
-    python setup_colab.py
-    python setup_colab.py --colab   # recommended on Google Colab (keeps preinstalled torch)
+    python -m scripts.setup_colab
+    python -m scripts.setup_colab --colab   # recommended on Google Colab (keeps preinstalled torch)
 
 Needs network.
 
@@ -400,8 +400,8 @@ if __name__ == "__main__":
         print(
             "\n---\n"
             "Hints: GPU runtime recommended.\n"
-            "  Modern Colab: python setup_colab.py --colab  (skips legacy native compile; torchvision fallbacks)\n"
-            "  If you intentionally build _C on an old toolchain: python setup_colab.py --colab --compile-native\n"
+            "  Modern Colab: python -m scripts.setup_colab --colab  (skips legacy native compile; torchvision fallbacks)\n"
+            "  If you intentionally build _C on an old toolchain: python -m scripts.setup_colab --colab --compile-native\n"
             "If verify fails: read the FAILED import lines above (often missing matplotlib/networkx).\n",
             file=sys.stderr,
         )

@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lib.apt_temporal_encoder import (
+from lib.apt.apt_temporal_encoder import (
     SpatialEncoder,
     SemanticExtractor,
     ShortTermEncoder,

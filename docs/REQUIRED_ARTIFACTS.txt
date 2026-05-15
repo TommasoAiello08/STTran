@@ -83,7 +83,7 @@ C) Inside repo but not in git (download or copy)
 D) VIDVRD: what exists in this repo vs what you need to train
 --------------------------------------------------------------------
 **In repo (code):**
-  - ``vidvrd_predcls_input.py``, ``vidvrd_predcls_featurizer.py``,
+  - ``lib.vidvrd.vidvrd_predcls_input.py``, ``lib.vidvrd.vidvrd_predcls_featurizer.py``,
     ``sttran_multitask_heads.py``, ``run_vidvrd_json_demo.py``
   - ``lib/sttran.py`` supports ``head="vidvrd"`` (trunk features for a predicate head).
 
@@ -182,7 +182,7 @@ G) Colab training skeleton (``colab/vidvrd_train_colab.py``)
   - ``make_synthetic_vidvrd_entry(...)`` — **smoke only**; does not run the VIDVRD JSON
     pipeline or featurizer.
   - ``build_training_batch_from_vidvrd(...)`` — **real batches**; thin wrapper around
-    ``vidvrd_predcls_input.build_vidvrd_predcls_entry`` (same as ``run_vidvrd_json_demo.py``).
+    ``lib.vidvrd.vidvrd_predcls_input.build_vidvrd_predcls_entry`` (same as ``run_vidvrd_json_demo.py``).
   - ``default_base_ckpt_path()`` / ``default_backup_dir()`` — repo-relative helpers
 
 --------------------------------------------------------------------

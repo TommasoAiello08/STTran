@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 
 from lib.object_detector import draw_union_boxes  # same rasterizer used elsewhere
-from vidvrd_featurizer_types import FeaturizerOutput
+from lib.vidvrd.vidvrd_featurizer_types import FeaturizerOutput
 
 
 class VidvrdPredclsFeaturizer(nn.Module):

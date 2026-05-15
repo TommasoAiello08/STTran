@@ -1,5 +1,5 @@
 """
-CPU- and CI-friendly stand-in for :class:`vidvrd_predcls_featurizer.VidvrdPredclsFeaturizer`.
+CPU- and CI-friendly stand-in for :class:`lib.vidvrd.vidvrd_predcls_featurizer.VidvrdPredclsFeaturizer`.
 
 Use to verify JSON → ``build_vidvrd_predcls_entry`` → tensor shapes without
 ``faster_rcnn_ag.pth`` / CUDA ROI ops.
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import torch
 
-from vidvrd_featurizer_types import FeaturizerOutput
+from lib.vidvrd.vidvrd_featurizer_types import FeaturizerOutput
 
 
 class VidvrdMockFeaturizer(torch.nn.Module):
