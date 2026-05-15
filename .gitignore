@@ -26,7 +26,7 @@ venv/
 **/build/
 **/*.egg-info/
 
-# Generated outputs / logs (copy finals to ../results/ for the report)
+# Generated outputs / logs (scratch; finals live in ../results/)
 output/
 output2_more/
 output/**/study_pack_*/
@@ -61,13 +61,15 @@ dataset/**
 !dataset/ag/videos/
 !dataset/ag/.gitignore
 
-# Generated figures outside results/ (scratch under output/)
+# ../results/ is fully tracked — no figure ignores for that tree
+# Figures outside results/ (scratch under output/, dataset/, etc.)
 *.png
 *.jpg
 *.jpeg
 *.gif
 *.pdf
 *.svg
+!results/
 !results/**
 
 # Local notebook copies
